@@ -16,6 +16,7 @@ package com.starrocks.credential;
 
 import com.starrocks.catalog.JDBCResource;
 import com.starrocks.common.util.CredentialMask;
+import com.starrocks.connector.flight.FlightConfig;
 import com.starrocks.connector.iceberg.IcebergCatalogProperties;
 import com.starrocks.connector.iceberg.rest.OAuth2SecurityConfig;
 import com.starrocks.connector.odps.OdpsProperties;
@@ -35,6 +36,9 @@ public class CredentialUtil {
 
 
     public static void maskCredential(Map<String, String> properties) {
+        // The Flight bearer token is never shown, not even partially.
+        properties.remove(FlightConfig.AUTH_TOKEN_KEY);
+
         // Mask for aws's credential
         doMask(properties, CloudConfigurationConstants.AWS_S3_ACCESS_KEY);
         doMask(properties, CloudConfigurationConstants.AWS_S3_SECRET_KEY);
