@@ -85,7 +85,8 @@ enum TPlanNodeType {
   STREAM_AGG_NODE,
   LAKE_META_SCAN_NODE,
   CAPTURE_VERSION_NODE,
-  RAW_VALUES_NODE
+  RAW_VALUES_NODE,
+  FLIGHT_SCAN_NODE
 }
 
 // phases of an execution node
@@ -455,6 +456,12 @@ struct TBinlogScanRange {
 
 // Specification of an individual data range which is held in its entirety
 // by a storage server
+// One redeemable Arrow Flight endpoint: where to connect and the opaque ticket to present.
+struct TFlightScanRange {
+  1: required list<string> locations
+  2: required binary ticket
+}
+
 struct TScanRange {
   // one of these must be set for every TScanRange
   4: optional TInternalScanRange internal_scan_range
@@ -466,6 +473,8 @@ struct TScanRange {
   20: optional THdfsScanRange hdfs_scan_range
 
   30: optional TBinlogScanRange binlog_scan_range
+
+  31: optional TFlightScanRange flight_scan_range
 }
 
 struct TMySQLScanNode {
@@ -647,6 +656,15 @@ struct TOlapScanNode {
 
   // This field is only used for flat json to provide a uniq id
   55: optional i32 next_uniq_id
+}
+
+struct TFlightScanNode {
+  1: optional Types.TTupleId tuple_id
+  // Flight server the endpoints are relative to (used when an endpoint reuses the connection)
+  2: optional string flight_uri
+  3: optional list<string> columns
+  // Bearer token for the Flight server; must never be logged or printed in EXPLAIN
+  4: optional string auth_token
 }
 
 struct TJDBCScanNode {
@@ -1455,6 +1473,8 @@ struct TPlanNode {
   63: optional TLakeScanNode lake_scan_node;
 
   64: optional TNestLoopJoinNode nestloop_join_node;
+
+  65: optional TFlightScanNode flight_scan_node;
 
   // 70 ~ 80 are reserved for stream operators
   // Stream plan

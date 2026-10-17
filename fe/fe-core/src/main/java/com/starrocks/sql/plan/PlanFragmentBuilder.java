@@ -70,6 +70,8 @@ import com.starrocks.common.Pair;
 import com.starrocks.common.PatternMatcher;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.connector.BucketProperty;
+import com.starrocks.connector.flight.FlightPredicateConverter;
+import com.starrocks.connector.flight.FlightTable;
 import com.starrocks.connector.metadata.MetadataTable;
 import com.starrocks.load.BrokerFileGroup;
 import com.starrocks.planner.AggregationNode;
@@ -88,6 +90,7 @@ import com.starrocks.planner.ExecGroup;
 import com.starrocks.planner.ExecGroupSets;
 import com.starrocks.planner.FileScanNode;
 import com.starrocks.planner.FileTableScanNode;
+import com.starrocks.planner.FlightScanNode;
 import com.starrocks.planner.FragmentNormalizer;
 import com.starrocks.planner.HashJoinNode;
 import com.starrocks.planner.HdfsScanNode;
@@ -226,6 +229,7 @@ import org.apache.commons.lang3.NotImplementedException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
+import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -2080,6 +2084,10 @@ public class PlanFragmentBuilder {
             }
             tupleDescriptor.computeMemLayout();
 
+            if (node.getTable() instanceof FlightTable) {
+                return buildFlightScan(optExpression, node, tupleDescriptor, context);
+            }
+
             JDBCScanNode scanNode = new JDBCScanNode(context.getNextNodeId(), tupleDescriptor,
                     (JDBCTable) node.getTable());
             currentExecGroup.add(scanNode, true);
@@ -2099,6 +2107,52 @@ public class PlanFragmentBuilder {
             context.getScanNodes().add(scanNode);
             PlanFragment fragment =
                     new PlanFragment(context.getNextFragmentId(), scanNode, DataPartition.UNPARTITIONED);
+            context.getFragments().add(fragment);
+            return fragment;
+        }
+
+        private PlanFragment buildFlightScan(OptExpression optExpression, PhysicalJDBCScanOperator node,
+                                             TupleDescriptor tupleDescriptor, ExecPlan context) {
+            FlightScanNode scanNode = new FlightScanNode(context.getNextNodeId(), tupleDescriptor,
+                    (FlightTable) node.getTable());
+            scanNode.setComputeResource(context.getConnectContext().getCurrentComputeResource());
+            currentExecGroup.add(scanNode, true);
+
+            // PushDownPredicateToExternalTableScanRule only leaves predicates here that the converter can render;
+            // anything that still fails to convert is evaluated by the backend instead of being dropped.
+            Map<ColumnRefOperator, Column> columns = node.getColRefToColumnMetaMap();
+            FlightPredicateConverter converter = new FlightPredicateConverter(ref -> {
+                Column column = columns.get(ref);
+                return column == null ? null : column.getName();
+            });
+            ScalarOperatorToExpr.FormatterContext formatterContext =
+                    new ScalarOperatorToExpr.FormatterContext(context.getColRefToExpr());
+            List<ScanPredicate> pushed = new ArrayList<>();
+            for (ScalarOperator predicate : Utils.extractConjuncts(node.getPredicate())) {
+                Optional<ScanPredicate> converted = converter.convert(predicate);
+                if (converted.isPresent()) {
+                    pushed.add(converted.get());
+                } else {
+                    scanNode.getConjuncts().add(ScalarOperatorToExpr.buildExecExpression(predicate, formatterContext));
+                }
+            }
+            if (!pushed.isEmpty()) {
+                scanNode.setPushedPredicate(pushed.size() == 1 ? pushed.get(0) : new ScanPredicate.And(pushed));
+            }
+
+            scanNode.setLimit(node.getLimit());
+            scanNode.computeColumns();
+            scanNode.computeStatistics(optExpression.getStatistics());
+            scanNode.setScanOptimizeOption(node.getScanOptimizeOption());
+            try {
+                scanNode.planScanRanges(scanNode.assignNodes());
+            } catch (StarRocksException | RuntimeException e) {
+                throw new StarRocksPlannerException("Failed to plan Flight scan of " + node.getTable().getName()
+                        + ": " + e.getMessage(), INTERNAL_ERROR);
+            }
+            context.getScanNodes().add(scanNode);
+            PlanFragment fragment =
+                    new PlanFragment(context.getNextFragmentId(), scanNode, DataPartition.RANDOM);
             context.getFragments().add(fragment);
             return fragment;
         }

@@ -90,7 +90,7 @@ public class FlightMetadata implements ConnectorMetadata {
             columns.add(new Column(field.getName(), FlightTypeMapper.toStarRocks(field), true));
         }
         int id = tableIds.computeIfAbsent(key, k -> ConnectorTableId.CONNECTOR_ID_GENERATOR.getNextId().asInt());
-        Table table = new FlightTable(id, tblName, columns, dbName, catalogName, config);
+        Table table = new FlightTable(id, tblName, columns, dbName, catalogName, config, service);
         tableCache.put(key, table);
         return table;
     }

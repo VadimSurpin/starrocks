@@ -16,7 +16,10 @@
 package com.starrocks.sql.optimizer.rule.transformation;
 
 import com.google.common.collect.Lists;
+import com.starrocks.catalog.Column;
 import com.starrocks.catalog.JDBCTable;
+import com.starrocks.connector.flight.FlightPredicateConverter;
+import com.starrocks.connector.flight.FlightTable;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
 import com.starrocks.sql.optimizer.Utils;
@@ -63,8 +66,7 @@ public class PushDownPredicateToExternalTableScanRule extends TransformationRule
         ScalarOperator predicate = Utils.compoundAnd(lfo.getPredicate(), operator.getPredicate());
         ScalarOperator scanPredicate = operator.getPredicate();
         ScalarOperator filterPredicate = lfo.getPredicate();
-        ExternalTablePredicateExtractor extractor = new ExternalTablePredicateExtractor(
-                        operator.getOpType() == OperatorType.LOGICAL_MYSQL_SCAN || isMySQLCompatibleJDBC(operator));
+        ExternalTablePredicateExtractor extractor = createExtractor(operator);
         extractor.extract(predicate);
         ScalarOperator pushedPredicate = extractor.getPushPredicate();
         ScalarOperator reservedPredicate = extractor.getReservePredicate();
@@ -122,6 +124,21 @@ public class PushDownPredicateToExternalTableScanRule extends TransformationRule
 
             return Lists.newArrayList(project);
         }
+    }
+
+    private ExternalTablePredicateExtractor createExtractor(Operator operator) {
+        if (operator.getOpType() == OperatorType.LOGICAL_JDBC_SCAN
+                && ((LogicalJDBCScanOperator) operator).getTable() instanceof FlightTable) {
+            // A Flight source only receives what FlightPredicateConverter can render exactly.
+            Map<ColumnRefOperator, Column> columns = ((LogicalJDBCScanOperator) operator).getColRefToColumnMetaMap();
+            FlightPredicateConverter converter = new FlightPredicateConverter(ref -> {
+                Column column = columns.get(ref);
+                return column == null ? null : column.getName();
+            });
+            return new ExternalTablePredicateExtractor(false, op -> converter.convert(op).isPresent());
+        }
+        return new ExternalTablePredicateExtractor(
+                operator.getOpType() == OperatorType.LOGICAL_MYSQL_SCAN || isMySQLCompatibleJDBC(operator));
     }
 
     private boolean isMySQLCompatibleJDBC(Operator operator) {

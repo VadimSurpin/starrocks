@@ -33,6 +33,7 @@ import com.starrocks.sql.optimizer.operator.scalar.ScalarOperatorVisitor;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 
 // Extract predicates that can be pushed down to external table
 // and predicates that must be reserved
@@ -44,11 +45,19 @@ public class ExternalTablePredicateExtractor {
             PrimitiveType.DATETIME, PrimitiveType.DECIMALV2, PrimitiveType.DOUBLE, PrimitiveType.FLOAT, PrimitiveType.JSON);
 
     private final boolean isMySQL;
+    // When set, replaces the built-in pushdown rules: a conjunct is pushed (with implicit casts stripped) only
+    // if this test accepts it. Used by sources that must be able to render the predicate exactly.
+    private final Predicate<ScalarOperator> customPushTest;
     private List<ScalarOperator> pushedPredicates = new LinkedList<>();
     private List<ScalarOperator> reservedPredicates = new LinkedList<>();
 
     public ExternalTablePredicateExtractor(boolean isMySQL) {
+        this(isMySQL, null);
+    }
+
+    public ExternalTablePredicateExtractor(boolean isMySQL, Predicate<ScalarOperator> customPushTest) {
         this.isMySQL = isMySQL;
+        this.customPushTest = customPushTest;
     }
 
     public ScalarOperator getPushPredicate() {
@@ -60,6 +69,17 @@ public class ExternalTablePredicateExtractor {
     }
 
     public void extract(ScalarOperator op) {
+        if (customPushTest != null) {
+            for (ScalarOperator conjunct : Utils.extractConjuncts(op)) {
+                ScalarOperator stripped = removeImplicitCast(conjunct);
+                if (customPushTest.test(stripped)) {
+                    pushedPredicates.add(stripped);
+                } else {
+                    reservedPredicates.add(conjunct);
+                }
+            }
+            return;
+        }
         if (op.getOpType().equals(OperatorType.COMPOUND)) {
             CompoundPredicateOperator operator = (CompoundPredicateOperator) op;
             switch (operator.getCompoundType()) {

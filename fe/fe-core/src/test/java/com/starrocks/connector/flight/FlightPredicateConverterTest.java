@@ -27,6 +27,7 @@ import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.InPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.IsNullPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
+import com.starrocks.sql.optimizer.rewrite.ExternalTablePredicateExtractor;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -115,5 +116,42 @@ public class FlightPredicateConverterTest {
         FlightPredicateConverter noColumns = new FlightPredicateConverter(ref -> null);
         Assertions.assertTrue(noColumns.convert(
                 BinaryPredicateOperator.eq(a, ConstantOperator.createBigint(5))).isEmpty());
+    }
+
+    private ExternalTablePredicateExtractor flightExtractor() {
+        return new ExternalTablePredicateExtractor(false, op -> converter.convert(op).isPresent());
+    }
+
+    @Test
+    public void extractorKeepsUnrenderablePredicatesInStarRocks() {
+        ScalarOperator pushable = BinaryPredicateOperator.eq(a, ConstantOperator.createBigint(1));
+        ScalarOperator keep = BinaryPredicateOperator.eq(
+                new CallOperator("abs", Type.BIGINT, List.of(a)), ConstantOperator.createBigint(2));
+        ExternalTablePredicateExtractor extractor = flightExtractor();
+        extractor.extract(CompoundPredicateOperator.and(pushable, keep));
+        Assertions.assertEquals(pushable, extractor.getPushPredicate());
+        Assertions.assertEquals(keep, extractor.getReservePredicate());
+    }
+
+    @Test
+    public void extractorStripsImplicitCastsBeforePushing() {
+        ScalarOperator withCast = BinaryPredicateOperator.gt(new CastOperator(Type.DOUBLE, a, true),
+                ConstantOperator.createDouble(1.5));
+        ExternalTablePredicateExtractor extractor = flightExtractor();
+        extractor.extract(withCast);
+        Assertions.assertEquals(BinaryPredicateOperator.gt(a, ConstantOperator.createDouble(1.5)),
+                extractor.getPushPredicate());
+        Assertions.assertNull(extractor.getReservePredicate());
+    }
+
+    @Test
+    public void extractorReservesWholeDisjunctionWhenOneBranchIsNotRenderable() {
+        ScalarOperator or = CompoundPredicateOperator.or(
+                BinaryPredicateOperator.eq(a, ConstantOperator.createBigint(1)),
+                new CallOperator("abs", Type.BOOLEAN, List.of(a)));
+        ExternalTablePredicateExtractor extractor = flightExtractor();
+        extractor.extract(or);
+        Assertions.assertNull(extractor.getPushPredicate());
+        Assertions.assertEquals(or, extractor.getReservePredicate());
     }
 }

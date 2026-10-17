@@ -30,15 +30,21 @@ import java.util.List;
  */
 public class FlightTable extends JDBCTable {
     private final transient FlightConfig config;
+    private final transient FlightService service;
 
     public FlightTable(long id, String name, List<Column> schema, String dbName, String catalogName,
-                       FlightConfig config) {
+                       FlightConfig config, FlightService service) {
         super(id, name, schema, dbName, catalogName);
         this.config = config;
+        this.service = service;
     }
 
     public FlightConfig getConfig() {
         return config;
+    }
+
+    public FlightService getService() {
+        return service;
     }
 
     @Override
