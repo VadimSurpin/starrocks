@@ -88,6 +88,13 @@ public class JDBCTable extends Table {
         validate(properties);
     }
 
+    /** For subclasses that carry no JDBC driver properties, such as Flight catalog tables. */
+    protected JDBCTable(long id, String name, List<Column> schema, String dbName, String catalogName) {
+        super(id, name, TableType.JDBC, schema);
+        this.catalogName = catalogName;
+        this.dbName = dbName;
+    }
+
     @Override
     public String getResourceName() {
         return resourceName;
