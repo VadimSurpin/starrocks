@@ -893,6 +893,18 @@ under the License.
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-jdbc</artifactId>
         </dependency>
+        <dependency>
+            <groupId>pro.surpin.arrowflight</groupId>
+            <artifactId>arrow-flight-starrocks-connector</artifactId>
+            <version>1.0.0</version>
+            <exclusions>
+                <!-- The shaded Flight SQL JDBC driver is only for the JDBC-catalog plugin path. -->
+                <exclusion>
+                    <groupId>org.apache.arrow</groupId>
+                    <artifactId>flight-sql-jdbc-driver</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
 
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
