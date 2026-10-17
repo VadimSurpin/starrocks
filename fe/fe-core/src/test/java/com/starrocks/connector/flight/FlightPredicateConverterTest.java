@@ -154,4 +154,26 @@ public class FlightPredicateConverterTest {
         Assertions.assertNull(extractor.getPushPredicate());
         Assertions.assertEquals(or, extractor.getReservePredicate());
     }
+
+    @Test
+    public void refusesComparisonsAcrossTypeFamilies() {
+        // After implicit casts are stripped these would be compared by the Flight server with its own coercion
+        // rules, which differ from StarRocks' (for example text against a number), so they stay in StarRocks.
+        assertNotPushable(BinaryPredicateOperator.eq(b, ConstantOperator.createBigint(1)));
+        assertNotPushable(BinaryPredicateOperator.eq(a, ConstantOperator.createVarchar("1")));
+        assertNotPushable(BinaryPredicateOperator.eq(d,
+                ConstantOperator.createDatetime(LocalDateTime.of(2026, 10, 17, 1, 2, 3))));
+        assertNotPushable(new InPredicateOperator(false, b, ConstantOperator.createBigint(1)));
+        assertNotPushable(new BetweenPredicateOperator(false, b, ConstantOperator.createBigint(1),
+                ConstantOperator.createBigint(2)));
+        assertNotPushable(BinaryPredicateOperator.eq(a, ConstantOperator.createBoolean(true)));
+    }
+
+    @Test
+    public void numericFamiliesCompareWithEachOther() {
+        Assertions.assertEquals("(col_a > 1.5)",
+                sql(BinaryPredicateOperator.gt(a, ConstantOperator.createDouble(1.5))));
+        Assertions.assertEquals("(col_x = 7)",
+                sql(BinaryPredicateOperator.eq(x, ConstantOperator.createBigint(7))));
+    }
 }

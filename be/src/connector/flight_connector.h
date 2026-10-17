@@ -70,6 +70,7 @@ private:
     const FlightDataSourceProvider* _provider;
     const TFlightScanRange _scan_range;
 
+    std::string _uri;
     std::unique_ptr<FlightScanReader> _reader;
     std::unique_ptr<FlightTicketStream> _stream;
     std::deque<ChunkPtr> _pending;

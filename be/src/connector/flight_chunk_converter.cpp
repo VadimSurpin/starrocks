@@ -40,8 +40,11 @@ StatusOr<ColumnPtr> convert_flight_array(const std::string& column_name, const a
 
     const size_t num_rows = array.length();
     ColumnPtr column = ColumnHelper::create_column(type, nullable);
-    Filter filter(num_rows, 0);
-    ArrowConvertContext ctx{nullptr, nullptr, column_name};
+    // The converters read the declared length limit from the slot, so they need one even without a tuple.
+    SlotDescriptor slot(SlotId(0), column_name, type);
+    ArrowConvertContext ctx{nullptr, &slot, column_name};
+    // Filter semantics follow the load path: 1 keeps a row, 0 marks one that could not be represented.
+    Filter filter(num_rows, 1);
 
     Column* data_column = column.get();
     uint8_t* null_data = nullptr;
@@ -56,7 +59,7 @@ StatusOr<ColumnPtr> convert_flight_array(const std::string& column_name, const a
 
     RETURN_IF_ERROR(func(&array, 0, num_rows, data_column, 0, null_data, &filter, &ctx, nullptr));
     // In strict mode a value that cannot be represented is marked in the filter instead of being nulled.
-    if (std::any_of(filter.begin(), filter.end(), [](uint8_t flagged) { return flagged != 0; })) {
+    if (std::any_of(filter.begin(), filter.end(), [](uint8_t keep) { return keep == 0; })) {
         return Status::DataQualityError(fmt::format(
                 "Flight column '{}' has values that cannot be represented as {}", column_name, type.debug_string()));
     }

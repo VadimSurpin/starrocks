@@ -64,6 +64,7 @@ Status FlightDataSource::open(RuntimeState* state) {
         _scan_range.locations.front() != arrow::flight::Location::ReuseConnection().ToString()) {
         uri = _scan_range.locations.front();
     }
+    _uri = uri;
     auto location = arrow::flight::Location::Parse(uri);
     if (!location.ok()) {
         return Status::InvalidArgument(fmt::format("Invalid Flight location '{}': {}", uri, location.status().message()));
@@ -112,7 +113,8 @@ Status FlightDataSource::get_next(RuntimeState* state, ChunkPtr* chunk) {
         }
         auto batch = _stream->Next();
         if (!batch.ok()) {
-            return Status::InternalError(batch.status().message());
+            return Status::InternalError(fmt::format("Flight endpoint {} failed while streaming: {}", _uri,
+                                                    batch.status().message()));
         }
         if (*batch == nullptr) {
             _eos = true;
@@ -121,7 +123,12 @@ Status FlightDataSource::get_next(RuntimeState* state, ChunkPtr* chunk) {
         if ((*batch)->num_rows() == 0) {
             continue;
         }
-        ASSIGN_OR_RETURN(ChunkPtr converted, convert_flight_batch(**batch, *_tuple_desc));
+        auto converted_or = convert_flight_batch(**batch, *_tuple_desc);
+        if (!converted_or.ok()) {
+            return Status::InternalError(fmt::format("Flight endpoint {} returned data StarRocks cannot read: {}", _uri,
+                                                     converted_or.status().message()));
+        }
+        ChunkPtr converted = std::move(converted_or).value();
         _enqueue(converted, state->chunk_size());
     }
     *chunk = std::move(_pending.front());

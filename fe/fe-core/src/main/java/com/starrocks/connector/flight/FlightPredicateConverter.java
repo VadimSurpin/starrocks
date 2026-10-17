@@ -68,6 +68,9 @@ public final class FlightPredicateConverter {
         ScalarOperator left = op.getChild(0);
         ScalarOperator right = op.getChild(1);
         boolean flipped = !(left instanceof ColumnRefOperator);
+        if (!sameFamily(flipped ? right : left, flipped ? left : right)) {
+            return Optional.empty();
+        }
         Optional<String> column = column(flipped ? right : left);
         Optional<ScanPredicate.Literal> literal = literal(flipped ? left : right);
         Optional<ScanPredicate.Op> comparison = comparison(op.getBinaryType(), flipped);
@@ -107,7 +110,7 @@ public final class FlightPredicateConverter {
         List<ScanPredicate.Literal> values = new ArrayList<>();
         for (int i = 1; i < op.getChildren().size(); i++) {
             Optional<ScanPredicate.Literal> value = literal(op.getChild(i));
-            if (value.isEmpty()) {
+            if (value.isEmpty() || !sameFamily(op.getChild(0), op.getChild(i))) {
                 return Optional.empty();
             }
             values.add(value.get());
@@ -120,7 +123,8 @@ public final class FlightPredicateConverter {
         Optional<String> column = column(op.getChild(0));
         Optional<ScanPredicate.Literal> low = literal(op.getChild(1));
         Optional<ScanPredicate.Literal> high = literal(op.getChild(2));
-        if (column.isEmpty() || low.isEmpty() || high.isEmpty()) {
+        if (column.isEmpty() || low.isEmpty() || high.isEmpty()
+                || !sameFamily(op.getChild(0), op.getChild(1)) || !sameFamily(op.getChild(0), op.getChild(2))) {
             return Optional.empty();
         }
         ScanPredicate range = new ScanPredicate.And(List.of(
@@ -148,6 +152,45 @@ public final class FlightPredicateConverter {
             default:
                 return Optional.empty();
         }
+    }
+
+    /** Type families whose values the Flight server compares the way StarRocks does. */
+    private enum Family { BOOLEAN, NUMERIC, STRING, DATE, DATETIME, OTHER }
+
+    private static Family family(ScalarOperator op) {
+        switch (op.getType().getPrimitiveType()) {
+            case BOOLEAN:
+                return Family.BOOLEAN;
+            case TINYINT:
+            case SMALLINT:
+            case INT:
+            case BIGINT:
+            case FLOAT:
+            case DOUBLE:
+            case DECIMAL32:
+            case DECIMAL64:
+            case DECIMAL128:
+                return Family.NUMERIC;
+            case CHAR:
+            case VARCHAR:
+                return Family.STRING;
+            case DATE:
+                return Family.DATE;
+            case DATETIME:
+                return Family.DATETIME;
+            default:
+                return Family.OTHER;
+        }
+    }
+
+    /**
+     * Implicit casts were stripped before pushdown, so a column compared with a constant of another family
+     * (text against a number, a date against a timestamp) would be coerced by the Flight server under its own
+     * rules. Such comparisons stay in StarRocks.
+     */
+    private static boolean sameFamily(ScalarOperator column, ScalarOperator constant) {
+        Family family = family(column);
+        return family != Family.OTHER && family == family(constant);
     }
 
     private Optional<String> column(ScalarOperator op) {
