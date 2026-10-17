@@ -125,6 +125,14 @@ if [ -z "$final_java_opt" ] ; then
     echo "JAVA_OPTS is not set in fe.conf, use default java options to start fe process: $final_java_opt"
 fi
 
+# Apache Arrow (used by the Flight external catalog) needs reflective access to java.nio direct buffers.
+# Without it Arrow fails to initialise and every Flight catalog query reports a memory leak.
+for arrow_open in "java.base/java.nio" "java.base/sun.nio.ch"; do
+    if [[ "${final_java_opt}" != *"--add-opens=${arrow_open}="* ]]; then
+        final_java_opt="${final_java_opt} --add-opens=${arrow_open}=ALL-UNNAMED"
+    fi
+done
+
 # Auto detect jvm -Xmx parameter in case $FE_ENABLE_AUTO_JVM_XMX_DETECT = true
 #  default to 70% of total available mem and can be tuned by env var: FE_JVM_XMX_PERCENTAGE
 # NOTE: the feature is only supported in container env
