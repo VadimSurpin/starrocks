@@ -19,6 +19,9 @@ add_library(Connector STATIC
         hive_connector.cpp
         es_connector.cpp
         jdbc_connector.cpp
+        flight_connector.cpp
+        flight_chunk_converter.cpp
+        flight_scan_reader.cpp
         lake_connector.cpp
         mysql_connector.cpp
         file_connector.cpp

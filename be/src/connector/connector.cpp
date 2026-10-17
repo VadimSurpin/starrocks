@@ -16,6 +16,7 @@
 
 #include "connector/binlog_connector.h"
 #include "connector/es_connector.h"
+#include "connector/flight_connector.h"
 #include "connector/file_connector.h"
 #include "connector/hive_connector.h"
 #include "connector/iceberg_connector.h"
@@ -49,6 +50,7 @@ const std::string Connector::FILE = "file";
 const std::string Connector::LAKE = "lake";
 const std::string Connector::BINLOG = "binlog";
 const std::string Connector::ICEBERG = "iceberg";
+const std::string Connector::FLIGHT = "flight";
 
 class ConnectorManagerInit {
 public:
@@ -62,6 +64,7 @@ public:
         cm->put(Connector::LAKE, std::make_unique<LakeConnector>());
         cm->put(Connector::BINLOG, std::make_unique<BinlogConnector>());
         cm->put(Connector::ICEBERG, std::make_unique<IcebergConnector>());
+        cm->put(Connector::FLIGHT, std::make_unique<FlightConnector>());
     }
 };
 
