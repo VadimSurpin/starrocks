@@ -129,7 +129,8 @@ public class PushDownAggToFlightScanRuleTest {
 
         LogicalJDBCScanOperator pushed = (LogicalJDBCScanOperator) top.inputAt(0).getOp();
         Assertions.assertNull(pushed.getPredicate());
-        Assertions.assertEquals("SELECT k, COUNT(*) AS __agg0, SUM(d) AS __agg1, MIN(i) AS __agg2, MAX(i) AS __agg3 "
+        Assertions.assertEquals("SELECT k, COUNT(*) AS __agg0, SUM(CAST(d AS DOUBLE)) AS __agg1, MIN(i) AS __agg2, "
+                + "MAX(i) AS __agg3 "
                 + "FROM sales.orders GROUP BY k",
                 ScanSql.select("sales", "orders", pushed.getFlightAggregation(), null));
         // the scan exposes the key and one column per partial, and nothing else
@@ -172,7 +173,7 @@ public class PushDownAggToFlightScanRuleTest {
             Assertions.assertEquals(partial.getType(), merge1.getFunction().getArgs()[0], merge1.toString());
         }
         LogicalJDBCScanOperator pushed = (LogicalJDBCScanOperator) top.inputAt(0).inputAt(0).getOp();
-        Assertions.assertEquals("SELECT SUM(i) AS __agg0, COUNT(i) AS __agg1 FROM sales.orders",
+        Assertions.assertEquals("SELECT SUM(CAST(i AS DOUBLE)) AS __agg0, COUNT(i) AS __agg1 FROM sales.orders",
                 ScanSql.select("sales", "orders", pushed.getFlightAggregation(), null));
     }
 
