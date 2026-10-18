@@ -16,6 +16,7 @@ package com.starrocks.connector.flight;
 
 import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.vector.types.pojo.Schema;
+import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.util.List;
@@ -30,6 +31,9 @@ public interface FlightService extends AutoCloseable {
     Schema tableSchema(String schema, String table);
 
     FlightInfo planScan(String schema, String table, List<String> columns, ScanPredicate where);
+
+    /** Plans a partial-aggregate query; every endpoint returns its own partial result. */
+    FlightInfo planScan(String schema, String table, ScanPredicate where, ScanAggregate aggregate);
 
     @Override
     void close();

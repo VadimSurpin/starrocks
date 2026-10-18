@@ -62,6 +62,12 @@ public class FlightMetadataTest {
         }
 
         @Override
+        public FlightInfo planScan(String schema, String table, ScanPredicate where,
+                                   pro.surpin.data.arrowflight.starrocks.ScanAggregate aggregate) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void close() {
         }
     }

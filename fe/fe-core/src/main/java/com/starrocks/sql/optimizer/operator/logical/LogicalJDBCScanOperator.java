@@ -23,10 +23,14 @@ import com.starrocks.sql.optimizer.operator.OperatorVisitor;
 import com.starrocks.sql.optimizer.operator.Projection;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
+import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 
 import java.util.Map;
+import java.util.Objects;
 
 public class LogicalJDBCScanOperator extends LogicalScanOperator {
+    // Set only for Flight tables: partial aggregation evaluated by the Flight server (see PushDownAggToFlightScanRule)
+    private ScanAggregate flightAggregation;
 
     public LogicalJDBCScanOperator(Table table,
                                    Map<ColumnRefOperator, Column> columnRefOperatorColumnMap,
@@ -46,6 +50,23 @@ public class LogicalJDBCScanOperator extends LogicalScanOperator {
         super(OperatorType.LOGICAL_JDBC_SCAN);
     }
 
+    public ScanAggregate getFlightAggregation() {
+        return flightAggregation;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        return super.equals(o) && Objects.equals(flightAggregation, ((LogicalJDBCScanOperator) o).flightAggregation);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(super.hashCode(), flightAggregation);
+    }
+
     @Override
     public <R, C> R accept(OperatorVisitor<R, C> visitor, C context) {
         return visitor.visitLogicalJDBCScan(this, context);
@@ -56,6 +77,18 @@ public class LogicalJDBCScanOperator extends LogicalScanOperator {
         @Override
         protected LogicalJDBCScanOperator newInstance() {
             return new LogicalJDBCScanOperator();
+        }
+
+        @Override
+        public Builder withOperator(LogicalJDBCScanOperator scanOperator) {
+            super.withOperator(scanOperator);
+            builder.flightAggregation = scanOperator.flightAggregation;
+            return this;
+        }
+
+        public Builder setFlightAggregation(ScanAggregate flightAggregation) {
+            builder.flightAggregation = flightAggregation;
+            return this;
         }
     }
 }

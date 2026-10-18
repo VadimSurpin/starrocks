@@ -24,6 +24,7 @@ import org.apache.arrow.flight.auth2.BearerCredentialWriter;
 import org.apache.arrow.flight.grpc.CredentialCallOption;
 import org.apache.arrow.vector.types.pojo.Schema;
 import pro.surpin.data.arrowflight.starrocks.FlightCatalog;
+import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.net.URI;
@@ -96,6 +97,11 @@ public class CatalogFlightService implements FlightService {
     @Override
     public FlightInfo planScan(String schema, String table, List<String> columns, ScanPredicate where) {
         return call(() -> catalog.planScan(schema, table, columns, where));
+    }
+
+    @Override
+    public FlightInfo planScan(String schema, String table, ScanPredicate where, ScanAggregate aggregate) {
+        return call(() -> catalog.planScan(schema, table, where, aggregate));
     }
 
     @Override

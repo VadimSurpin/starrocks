@@ -35,6 +35,7 @@ import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.nio.charset.StandardCharsets;
@@ -49,6 +50,7 @@ public class FlightScanNodeTest {
     private static class RecordingService implements FlightService {
         List<String> columns;
         ScanPredicate where;
+        ScanAggregate aggregate;
         int endpoints = 2;
 
         @Override
@@ -64,6 +66,13 @@ public class FlightScanNodeTest {
         @Override
         public Schema tableSchema(String schema, String table) {
             return null;
+        }
+
+        @Override
+        public FlightInfo planScan(String schema, String table, ScanPredicate where, ScanAggregate aggregate) {
+            this.where = where;
+            this.aggregate = aggregate;
+            return planScan(schema, table, List.of(), where);
         }
 
         @Override
@@ -164,5 +173,26 @@ public class FlightScanNodeTest {
         FlightScanNode node = node();
         node.computeColumns();
         Assertions.assertThrows(IllegalStateException.class, () -> node.planScanRanges(List.of()));
+    }
+
+    private static ScanAggregate aggregate() {
+        return new ScanAggregate(List.of("id"), List.of(
+                new ScanAggregate.Partial(ScanAggregate.Func.COUNT_STAR, null, "__agg0")));
+    }
+
+    @Test
+    public void aggregatePushdownIsPlannedAndExplained() {
+        FlightScanNode node = node();
+        node.setPushedPredicate(new ScanPredicate.IsNull("id", true));
+        node.setAggregation(aggregate());
+        node.computeColumns();
+        node.planScanRanges(backends());
+
+        Assertions.assertNotNull(service.aggregate);
+        Assertions.assertEquals("(id IS NOT NULL)", service.where.toSql());
+        String explain = node.getExplainString();
+        Assertions.assertTrue(explain.contains(
+                "QUERY: SELECT id, COUNT(*) AS __agg0 FROM sales.orders WHERE (id IS NOT NULL) GROUP BY id"), explain);
+        Assertions.assertEquals(2, node.getScanRangeLocations(0).size());
     }
 }

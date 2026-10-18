@@ -36,6 +36,7 @@ import com.starrocks.thrift.TScanRangeLocations;
 import org.apache.arrow.flight.FlightEndpoint;
 import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.flight.Location;
+import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 import pro.surpin.data.arrowflight.starrocks.ScanSql;
 
@@ -55,6 +56,7 @@ public class FlightScanNode extends ScanNode {
     private final List<TScanRangeLocations> scanRanges = new ArrayList<>();
     private final Random random = new Random();
     private ScanPredicate pushedPredicate;
+    private ScanAggregate aggregation;
 
     public FlightScanNode(PlanNodeId id, TupleDescriptor desc, FlightTable table) {
         super(id, desc, "SCAN FLIGHT");
@@ -63,6 +65,11 @@ public class FlightScanNode extends ScanNode {
 
     public void setPushedPredicate(ScanPredicate pushedPredicate) {
         this.pushedPredicate = pushedPredicate;
+    }
+
+    /** Partial aggregation the Flight server computes per endpoint; the scan then yields keys and partials. */
+    public void setAggregation(ScanAggregate aggregation) {
+        this.aggregation = aggregation;
     }
 
     /** The remote columns to read; empty (for example count(*)) means the server's default projection. */
@@ -94,8 +101,10 @@ public class FlightScanNode extends ScanNode {
         if (nodes.isEmpty()) {
             throw new IllegalStateException("No alive backends or compute nodes");
         }
-        FlightInfo info = table.getService().planScan(table.getCatalogDBName(), table.getName(),
-                new ArrayList<>(columns), pushedPredicate);
+        FlightInfo info = aggregation != null
+                ? table.getService().planScan(table.getCatalogDBName(), table.getName(), pushedPredicate, aggregation)
+                : table.getService().planScan(table.getCatalogDBName(), table.getName(),
+                        new ArrayList<>(columns), pushedPredicate);
         scanRanges.clear();
         int next = random.nextInt(nodes.size());
         for (FlightEndpoint endpoint : info.getEndpoints()) {
@@ -132,8 +141,10 @@ public class FlightScanNode extends ScanNode {
         StringBuilder output = new StringBuilder();
         output.append(prefix).append("TABLE: ").append(table.getCatalogDBName()).append('.')
                 .append(table.getName()).append('\n');
-        output.append(prefix).append("QUERY: ").append(ScanSql.select(table.getCatalogDBName(), table.getName(),
-                columns, pushedPredicate)).append('\n');
+        String query = aggregation != null
+                ? ScanSql.select(table.getCatalogDBName(), table.getName(), aggregation, pushedPredicate)
+                : ScanSql.select(table.getCatalogDBName(), table.getName(), columns, pushedPredicate);
+        output.append(prefix).append("QUERY: ").append(query).append('\n');
         output.append(prefix).append("FLIGHT ENDPOINTS: ").append(scanRanges.size()).append('\n');
         return output.toString();
     }

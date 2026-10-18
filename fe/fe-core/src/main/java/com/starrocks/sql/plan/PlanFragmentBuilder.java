@@ -2140,6 +2140,7 @@ public class PlanFragmentBuilder {
                 scanNode.setPushedPredicate(pushed.size() == 1 ? pushed.get(0) : new ScanPredicate.And(pushed));
             }
 
+            scanNode.setAggregation(node.getFlightAggregation());
             scanNode.setLimit(node.getLimit());
             scanNode.computeColumns();
             scanNode.computeStatistics(optExpression.getStatistics());
