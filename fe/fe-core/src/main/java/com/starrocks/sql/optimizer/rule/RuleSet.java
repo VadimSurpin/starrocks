@@ -119,6 +119,7 @@ import com.starrocks.sql.optimizer.rule.transformation.PruneUnionColumnsRule;
 import com.starrocks.sql.optimizer.rule.transformation.PruneValuesColumnsRule;
 import com.starrocks.sql.optimizer.rule.transformation.PruneWindowColumnsRule;
 import com.starrocks.sql.optimizer.rule.transformation.PushDownAggFunPredicateRule;
+import com.starrocks.sql.optimizer.rule.transformation.PushDownAggToFlightScanRule;
 import com.starrocks.sql.optimizer.rule.transformation.PushDownAggToMetaScanRule;
 import com.starrocks.sql.optimizer.rule.transformation.PushDownApplyAggFilterRule;
 import com.starrocks.sql.optimizer.rule.transformation.PushDownApplyAggProjectFilterRule;
@@ -420,6 +421,8 @@ public class RuleSet {
     public static final Rule META_SCAN_REWRITE_RULES =
             new CombinationRule(RuleType.GP_META_SCAN_REWRITE, ImmutableList.of(
                     new PushDownAggToMetaScanRule(),
+                    PushDownAggToFlightScanRule.WITH_PROJECT,
+                    PushDownAggToFlightScanRule.WITHOUT_PROJECT,
                     new PushDownFlatJsonMetaToMetaScanRule(),
                     new RewriteSimpleAggToMetaScanRule(),
                     RewriteSimpleAggToHDFSScanRule.SCAN_AND_PROJECT,

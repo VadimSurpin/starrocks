@@ -24,6 +24,7 @@ import com.starrocks.sql.optimizer.operator.Projection;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
+import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.util.Map;
 import java.util.Objects;
@@ -31,6 +32,8 @@ import java.util.Objects;
 public class LogicalJDBCScanOperator extends LogicalScanOperator {
     // Set only for Flight tables: partial aggregation evaluated by the Flight server (see PushDownAggToFlightScanRule)
     private ScanAggregate flightAggregation;
+    // The filter rendered for the Flight server; kept here because the aggregated scan no longer exposes its columns
+    private ScanPredicate flightPredicate;
 
     public LogicalJDBCScanOperator(Table table,
                                    Map<ColumnRefOperator, Column> columnRefOperatorColumnMap,
@@ -54,17 +57,23 @@ public class LogicalJDBCScanOperator extends LogicalScanOperator {
         return flightAggregation;
     }
 
+    public ScanPredicate getFlightPredicate() {
+        return flightPredicate;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
         }
-        return super.equals(o) && Objects.equals(flightAggregation, ((LogicalJDBCScanOperator) o).flightAggregation);
+        LogicalJDBCScanOperator that = (LogicalJDBCScanOperator) o;
+        return super.equals(o) && Objects.equals(flightAggregation, that.flightAggregation)
+                && Objects.equals(flightPredicate, that.flightPredicate);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), flightAggregation);
+        return Objects.hash(super.hashCode(), flightAggregation, flightPredicate);
     }
 
     @Override
@@ -83,6 +92,12 @@ public class LogicalJDBCScanOperator extends LogicalScanOperator {
         public Builder withOperator(LogicalJDBCScanOperator scanOperator) {
             super.withOperator(scanOperator);
             builder.flightAggregation = scanOperator.flightAggregation;
+            builder.flightPredicate = scanOperator.flightPredicate;
+            return this;
+        }
+
+        public Builder setFlightPredicate(ScanPredicate flightPredicate) {
+            builder.flightPredicate = flightPredicate;
             return this;
         }
 

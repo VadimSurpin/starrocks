@@ -20,17 +20,24 @@ import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.OperatorVisitor;
 import com.starrocks.sql.optimizer.operator.logical.LogicalJDBCScanOperator;
 import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
+import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 public class PhysicalJDBCScanOperator extends PhysicalScanOperator {
     private final ScanAggregate flightAggregation;
+    private final ScanPredicate flightPredicate;
 
     public PhysicalJDBCScanOperator(LogicalJDBCScanOperator scanOperator) {
         super(OperatorType.PHYSICAL_JDBC_SCAN, scanOperator);
         this.flightAggregation = scanOperator.getFlightAggregation();
+        this.flightPredicate = scanOperator.getFlightPredicate();
     }
 
     public ScanAggregate getFlightAggregation() {
         return flightAggregation;
+    }
+
+    public ScanPredicate getFlightPredicate() {
+        return flightPredicate;
     }
 
     @Override

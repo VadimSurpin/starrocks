@@ -26,6 +26,7 @@ public final class FlightConfig {
     public static final String AUTH_TYPE_KEY = "flight.auth.type";
     public static final String AUTH_TOKEN_KEY = "flight.auth.token";
     public static final String CACHE_TTL_KEY = "flight.cache.ttl.seconds";
+    public static final String AGGREGATION_PUSHDOWN_KEY = "flight.aggregation_pushdown";
 
     /** Supported authentication schemes. */
     public enum AuthType { NONE, TOKEN }
@@ -34,8 +35,11 @@ public final class FlightConfig {
     private final AuthType authType;
     private final String token;
     private final int cacheTtlSeconds;
+    private final boolean aggregationPushdown;
 
-    private FlightConfig(String uri, AuthType authType, String token, int cacheTtlSeconds) {
+    private FlightConfig(String uri, AuthType authType, String token, int cacheTtlSeconds,
+                         boolean aggregationPushdown) {
+        this.aggregationPushdown = aggregationPushdown;
         this.uri = uri;
         this.authType = authType;
         this.token = token;
@@ -87,7 +91,20 @@ public final class FlightConfig {
                 throw new StarRocksConnectorException(CACHE_TTL_KEY + " must be an integer, got: " + ttlValue);
             }
         }
-        return new FlightConfig(uri, authType, token, ttl);
+        boolean aggregationPushdown = true;
+        String pushdownValue = properties.get(AGGREGATION_PUSHDOWN_KEY);
+        if (pushdownValue != null) {
+            if (!"true".equalsIgnoreCase(pushdownValue) && !"false".equalsIgnoreCase(pushdownValue)) {
+                throw new StarRocksConnectorException(
+                        AGGREGATION_PUSHDOWN_KEY + " must be 'true' or 'false', got: " + pushdownValue);
+            }
+            aggregationPushdown = Boolean.parseBoolean(pushdownValue);
+        }
+        return new FlightConfig(uri, authType, token, ttl, aggregationPushdown);
+    }
+
+    public boolean isAggregationPushdown() {
+        return aggregationPushdown;
     }
 
     public String getUri() {

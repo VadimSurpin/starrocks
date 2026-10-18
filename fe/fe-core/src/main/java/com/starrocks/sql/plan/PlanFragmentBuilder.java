@@ -2128,12 +2128,20 @@ public class PlanFragmentBuilder {
             ScalarOperatorToExpr.FormatterContext formatterContext =
                     new ScalarOperatorToExpr.FormatterContext(context.getColRefToExpr());
             List<ScanPredicate> pushed = new ArrayList<>();
-            for (ScalarOperator predicate : Utils.extractConjuncts(node.getPredicate())) {
-                Optional<ScanPredicate> converted = converter.convert(predicate);
-                if (converted.isPresent()) {
-                    pushed.add(converted.get());
-                } else {
-                    scanNode.getConjuncts().add(ScalarOperatorToExpr.buildExecExpression(predicate, formatterContext));
+            if (node.getFlightAggregation() != null) {
+                // The rewrite already rendered the whole filter (its columns are no longer in the scan's tuple).
+                if (node.getFlightPredicate() != null) {
+                    pushed.add(node.getFlightPredicate());
+                }
+            } else {
+                for (ScalarOperator predicate : Utils.extractConjuncts(node.getPredicate())) {
+                    Optional<ScanPredicate> converted = converter.convert(predicate);
+                    if (converted.isPresent()) {
+                        pushed.add(converted.get());
+                    } else {
+                        scanNode.getConjuncts().add(
+                                ScalarOperatorToExpr.buildExecExpression(predicate, formatterContext));
+                    }
                 }
             }
             if (!pushed.isEmpty()) {
