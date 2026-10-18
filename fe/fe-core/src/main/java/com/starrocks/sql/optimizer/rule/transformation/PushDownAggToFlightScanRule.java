@@ -202,8 +202,11 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
                 Part part = spec.parts.get(0);
                 String mergeFn = part.func == ScanAggregate.Func.COUNT || part.func == ScanAggregate.Func.COUNT_STAR
                         ? FunctionSet.SUM : spec.original.getFnName();
+                // Only MIN/MAX keep their input type, so only they can reuse the original function; COUNT and SUM
+                // merge with SUM over the partial's own type.
+                boolean sameFunction = part.func == ScanAggregate.Func.MIN || part.func == ScanAggregate.Func.MAX;
                 merged.put(spec.output, mergeCall(mergeFn, spec.output.getType(), partialRefs[0],
-                        spec.original.getFunction()));
+                        sameFunction ? spec.original.getFunction() : null));
                 above.put(spec.output, spec.output);
             }
         }

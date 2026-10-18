@@ -48,23 +48,26 @@ public class PushDownAggToFlightScanRuleTest {
     private final Column kCol = new Column("k", Type.INT);
     private final Column iCol = new Column("i", Type.INT);
     private final Column dCol = new Column("d", Type.DOUBLE);
+    private final Column fCol = new Column("f", Type.FLOAT);
     private final Column sCol = new Column("s", Type.VARCHAR);
     private final Column idCol = new Column("id", Type.BIGINT);
     private final ColumnRefOperator k = factory.create("k", Type.INT, true);
     private final ColumnRefOperator i = factory.create("i", Type.INT, true);
     private final ColumnRefOperator d = factory.create("d", Type.DOUBLE, true);
+    private final ColumnRefOperator f = factory.create("f", Type.FLOAT, true);
     private final ColumnRefOperator s = factory.create("s", Type.VARCHAR, true);
     private final ColumnRefOperator id = factory.create("id", Type.BIGINT, true);
 
     private LogicalJDBCScanOperator scan(Map<String, String> extra, ScalarOperator predicate, long limit) {
         Map<String, String> props = new HashMap<>(extra);
         props.put("flight.uri", "grpc://localhost:8815");
-        FlightTable table = new FlightTable(1, "orders", List.of(kCol, iCol, dCol, sCol, idCol), "sales", "flight",
+        FlightTable table = new FlightTable(1, "orders", List.of(kCol, iCol, dCol, fCol, sCol, idCol), "sales", "flight",
                 FlightConfig.from(props), null);
         Map<ColumnRefOperator, Column> refs = new LinkedHashMap<>();
         refs.put(k, kCol);
         refs.put(i, iCol);
         refs.put(d, dCol);
+        refs.put(f, fCol);
         refs.put(s, sCol);
         refs.put(id, idCol);
         Map<Column, ColumnRefOperator> cols = new LinkedHashMap<>();
@@ -117,6 +120,13 @@ public class PushDownAggToFlightScanRuleTest {
         Assertions.assertEquals(FunctionSet.MIN, merge.getAggregations().get(min).getFnName());
         Assertions.assertEquals(FunctionSet.MAX, merge.getAggregations().get(max).getFnName());
 
+        // The merge must run the right function over the partial's own type, not the original call's function.
+        for (CallOperator merge1 : merge.getAggregations().values()) {
+            ColumnRefOperator partial = (ColumnRefOperator) merge1.getChild(0);
+            Assertions.assertEquals(merge1.getFnName(), merge1.getFunction().functionName(), merge1.toString());
+            Assertions.assertEquals(partial.getType(), merge1.getFunction().getArgs()[0], merge1.toString());
+        }
+
         LogicalJDBCScanOperator pushed = (LogicalJDBCScanOperator) top.inputAt(0).getOp();
         Assertions.assertNull(pushed.getPredicate());
         Assertions.assertEquals("SELECT k, COUNT(*) AS __agg0, SUM(d) AS __agg1, MIN(i) AS __agg2, MAX(i) AS __agg3 "
@@ -128,6 +138,16 @@ public class PushDownAggToFlightScanRuleTest {
         Assertions.assertFalse(pushed.getColRefToColumnMetaMap().containsKey(s));
         Assertions.assertEquals(Type.DOUBLE, pushed.getColRefToColumnMetaMap().values().stream()
                 .filter(c -> c.getName().equals("__agg1")).findFirst().orElseThrow().getType());
+    }
+
+    @Test
+    public void floatSumMergesAsADoubleSum() {
+        ColumnRefOperator sum = factory.create("sf", Type.DOUBLE, true);
+        List<OptExpression> result = run(aggOver(scan(Map.of(), null, -1), List.of(),
+                Map.of(sum, call(FunctionSet.SUM, Type.DOUBLE, false, f))));
+        CallOperator merged = ((LogicalAggregationOperator) result.get(0).getOp()).getAggregations().get(sum);
+        Assertions.assertEquals("sum", merged.getFunction().functionName());
+        Assertions.assertEquals(Type.DOUBLE, merged.getFunction().getArgs()[0]);
     }
 
     @Test
@@ -146,6 +166,11 @@ public class PushDownAggToFlightScanRuleTest {
         Assertions.assertEquals(FunctionSet.DIVIDE, ((CallOperator) division).getFnName());
         LogicalAggregationOperator merge = (LogicalAggregationOperator) top.inputAt(0).getOp();
         Assertions.assertEquals(2, merge.getAggregations().size());
+        for (CallOperator merge1 : merge.getAggregations().values()) {
+            ColumnRefOperator partial = (ColumnRefOperator) merge1.getChild(0);
+            Assertions.assertEquals("sum", merge1.getFunction().functionName(), merge1.toString());
+            Assertions.assertEquals(partial.getType(), merge1.getFunction().getArgs()[0], merge1.toString());
+        }
         LogicalJDBCScanOperator pushed = (LogicalJDBCScanOperator) top.inputAt(0).inputAt(0).getOp();
         Assertions.assertEquals("SELECT SUM(i) AS __agg0, COUNT(i) AS __agg1 FROM sales.orders",
                 ScanSql.select("sales", "orders", pushed.getFlightAggregation(), null));
