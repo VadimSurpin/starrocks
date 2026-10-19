@@ -18,6 +18,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.starrocks.catalog.Column;
+import com.starrocks.connector.flight.FlightTable;
 import com.starrocks.sql.optimizer.ExpressionContext;
 import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.operator.Operator;
@@ -188,6 +189,9 @@ public class LogicalProperty implements Property {
                     }
                     return OneTabletProperty.supportWithoutChangeDistribution(new ColumnRefSet(bucketColumns));
                 }
+                return OneTabletProperty.notSupport();
+            } else if (node instanceof LogicalJDBCScanOperator && node.getTable() instanceof FlightTable) {
+                // A Flight table plans to one scan range per endpoint, so its fragment runs several instances.
                 return OneTabletProperty.notSupport();
             } else if (node instanceof LogicalMysqlScanOperator || node instanceof LogicalJDBCScanOperator) {
                 return OneTabletProperty.supportWithoutChangeDistribution(new ColumnRefSet());
