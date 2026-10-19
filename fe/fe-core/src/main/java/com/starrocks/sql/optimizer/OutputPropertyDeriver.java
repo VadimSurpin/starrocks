@@ -24,6 +24,7 @@ import com.starrocks.catalog.Column;
 import com.starrocks.catalog.IcebergTable;
 import com.starrocks.catalog.system.SystemTable;
 import com.starrocks.connector.BucketProperty;
+import com.starrocks.connector.flight.FlightTable;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.server.GlobalStateMgr;
@@ -683,6 +684,10 @@ public class OutputPropertyDeriver extends PropertyDeriverBase<PhysicalPropertyS
 
     @Override
     public PhysicalPropertySet visitPhysicalJDBCScan(PhysicalJDBCScanOperator node, ExpressionContext context) {
+        if (node.getTable() instanceof FlightTable) {
+            // One fragment instance per Flight endpoint: make no distribution claim so exchanges are planned above it.
+            return mergeCTEProperty(PhysicalPropertySet.EMPTY);
+        }
         return createGatherPropertySet();
     }
 
