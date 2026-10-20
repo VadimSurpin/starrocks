@@ -16,6 +16,7 @@ package com.starrocks.sql.optimizer.rule.transformation;
 
 import com.google.common.collect.Lists;
 import com.starrocks.analysis.Expr;
+import com.starrocks.catalog.AggregateFunction;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
@@ -25,6 +26,7 @@ import com.starrocks.catalog.Type;
 import com.starrocks.connector.flight.FlightExprConverter;
 import com.starrocks.connector.flight.FlightPredicateConverter;
 import com.starrocks.connector.flight.FlightTable;
+import com.starrocks.sql.analyzer.DecimalV3FunctionAnalyzer;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
 import com.starrocks.sql.optimizer.Utils;
@@ -244,6 +246,11 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
                 Function.CompareMode.IS_IDENTICAL);
         if (fn == null) {
             fn = Expr.getBuiltinFunction(name, new Type[] {type}, Function.CompareMode.IS_NONSTRICT_SUPERTYPE_OF);
+        }
+        if (decimal(type) && fn instanceof AggregateFunction) {
+            // The built-in decimal function is declared over a wildcard DECIMAL128; the exchange between the local and
+            // merge phase takes its column type from the function, so it needs the concrete precision and scale.
+            fn = DecimalV3FunctionAnalyzer.rectifyAggregationFunction((AggregateFunction) fn, type, type);
         }
         return new CallOperator(name, type, Lists.newArrayList(partial), fn);
     }

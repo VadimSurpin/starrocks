@@ -127,8 +127,10 @@ public class PushDownAggDecimalFlightScanRuleTest {
         Assertions.assertEquals("sum", sum.getFunction().functionName());
         ColumnRefOperator partial = (ColumnRefOperator) sum.getChild(0);
         Assertions.assertEquals(D38_4, partial.getType());
-        // StarRocks' decimal sum is declared over a wildcard DECIMAL128; the call itself carries the exact types
-        Assertions.assertTrue(sum.getFunction().getArgs()[0].isDecimalV3());
+        // The exchange between the local and merge phase takes its type from the function, so a wildcard DECIMAL128
+        // (no precision and scale) would corrupt the column and crash the backend's result writer.
+        Assertions.assertEquals(D38_4, sum.getFunction().getArgs()[0]);
+        Assertions.assertEquals(D38_4, sum.getFunction().getReturnType());
         Assertions.assertEquals(D38_4, sum.getType());
 
         LogicalJDBCScanOperator pushed = (LogicalJDBCScanOperator) result.get(0).inputAt(0).getOp();
