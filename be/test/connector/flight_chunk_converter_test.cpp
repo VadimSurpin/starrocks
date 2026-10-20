@@ -85,6 +85,53 @@ TEST_F(FlightChunkConverterTest, decimal128_into_decimal64) {
     EXPECT_EQ(12345, result.value()->get(0).get_int64());
 }
 
+// The Flight server can send DECIMAL(p, s) with p <= 18 as the unscaled integer ("narrow" wire form).
+TEST_F(FlightChunkConverterTest, int64_unscaled_into_decimal64) {
+    arrow::Int64Builder builder;
+    ASSERT_TRUE(builder.Append(12345).ok()); // 123.45
+    ASSERT_TRUE(builder.AppendNull().ok());
+    ASSERT_TRUE(builder.Append(-5).ok()); // -0.05
+    auto array = builder.Finish().ValueOrDie();
+    auto result =
+            convert_flight_array("price", *array, TypeDescriptor::create_decimalv3_type(TYPE_DECIMAL64, 15, 2), true);
+    ASSERT_TRUE(result.ok()) << result.status().to_string();
+    ColumnPtr column = result.value();
+    ASSERT_EQ(3, column->size());
+    EXPECT_EQ(12345, column->get(0).get_int64());
+    EXPECT_TRUE(column->is_null(1));
+    EXPECT_EQ(-5, column->get(2).get_int64());
+}
+
+TEST_F(FlightChunkConverterTest, int32_unscaled_into_decimal32) {
+    arrow::Int32Builder builder;
+    ASSERT_TRUE(builder.Append(1250).ok()); // 1.250
+    ASSERT_TRUE(builder.Append(-4000001).ok());
+    auto array = builder.Finish().ValueOrDie();
+    auto result =
+            convert_flight_array("ratio", *array, TypeDescriptor::create_decimalv3_type(TYPE_DECIMAL32, 7, 3), false);
+    ASSERT_TRUE(result.ok()) << result.status().to_string();
+    EXPECT_EQ(1250, result.value()->get(0).get_int32());
+    EXPECT_EQ(-4000001, result.value()->get(1).get_int32());
+}
+
+TEST_F(FlightChunkConverterTest, int64_unscaled_widens_into_decimal128) {
+    auto array = int64_array({7, -9});
+    auto result = convert_flight_array("wide", *array, TypeDescriptor::create_decimalv3_type(TYPE_DECIMAL128, 38, 4),
+                                       false);
+    ASSERT_TRUE(result.ok()) << result.status().to_string();
+    EXPECT_EQ(7, result.value()->get(0).get_int128());
+    EXPECT_EQ(-9, result.value()->get(1).get_int128());
+}
+
+TEST_F(FlightChunkConverterTest, unscaled_integer_beyond_the_precision_is_an_error_naming_the_column) {
+    auto array = int64_array({1'000'000'000'000'000}); // 10^15 does not fit DECIMAL(15, 2)
+    auto result =
+            convert_flight_array("price", *array, TypeDescriptor::create_decimalv3_type(TYPE_DECIMAL64, 15, 2), false);
+    ASSERT_FALSE(result.ok());
+    EXPECT_TRUE(result.status().is_data_quality_error()) << result.status().to_string();
+    EXPECT_NE(std::string::npos, result.status().message().find("price")) << result.status().message();
+}
+
 TEST_F(FlightChunkConverterTest, type_mismatch_is_an_error_naming_the_column) {
     arrow::StringBuilder builder;
     ASSERT_TRUE(builder.Append("not a number").ok());
