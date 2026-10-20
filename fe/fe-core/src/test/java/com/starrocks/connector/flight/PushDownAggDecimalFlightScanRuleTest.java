@@ -178,4 +178,23 @@ public class PushDownAggDecimalFlightScanRuleTest {
         Assertions.assertTrue(run(aggOver(Map.of(total, call(FunctionSet.SUM, D38_2, odd)),
                 projectOf(odd, call("abs", D15_2, price))), true).isEmpty());
     }
+
+    @Test
+    public void decimalAvgSplitsIntoAnExactSumAndACountDividedAbove() {
+        Type avgType = ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL128, 38, 8);
+        ColumnRefOperator avg = factory.create("av", avgType, true);
+        List<OptExpression> result = run(aggOver(Map.of(avg, call(FunctionSet.AVG, avgType, price)), null), false);
+
+        Assertions.assertEquals(1, result.size());
+        OptExpression top = result.get(0);
+        ScalarOperator division = ((LogicalProjectOperator) top.getOp()).getColumnRefMap().get(avg);
+        Assertions.assertEquals(FunctionSet.DIVIDE, ((CallOperator) division).getFnName());
+        Assertions.assertEquals(avgType, division.getType());
+        LogicalAggregationOperator merge = (LogicalAggregationOperator) top.inputAt(0).getOp();
+        Assertions.assertEquals(2, merge.getAggregations().size());
+        LogicalJDBCScanOperator pushed = (LogicalJDBCScanOperator) top.inputAt(0).inputAt(0).getOp();
+        Assertions.assertEquals("SELECT k, SUM(CAST(price AS DECIMAL(38,2))) AS __agg0, COUNT(price) AS __agg1 "
+                + "FROM sales.orders GROUP BY k",
+                ScanSql.select("sales", "orders", pushed.getFlightAggregation(), null));
+    }
 }

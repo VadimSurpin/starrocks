@@ -41,6 +41,7 @@ import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.RuleType;
+import com.starrocks.sql.optimizer.rule.transformation.materialization.common.AggregatePushDownUtils;
 import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanExpr;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
@@ -198,14 +199,20 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
                 partialRefs[p] = ref;
             }
             if (spec.avg) {
-                ColumnRefOperator sum = factory.create("avg_sum", Type.DOUBLE, true);
+                Type sumType = spec.parts.get(0).type;
+                ColumnRefOperator sum = factory.create("avg_sum", sumType, true);
                 ColumnRefOperator count = factory.create("avg_count", Type.BIGINT, true);
-                merged.put(sum, mergeCall(FunctionSet.SUM, Type.DOUBLE, partialRefs[0], null));
+                merged.put(sum, mergeCall(FunctionSet.SUM, sumType, partialRefs[0], null));
                 merged.put(count, mergeCall(FunctionSet.SUM, Type.BIGINT, partialRefs[1], null));
-                Function divide = Expr.getBuiltinFunction(FunctionSet.DIVIDE, new Type[] {Type.DOUBLE, Type.DOUBLE},
-                        Function.CompareMode.IS_IDENTICAL);
-                above.put(spec.output, new CallOperator(FunctionSet.DIVIDE, Type.DOUBLE,
-                        Lists.newArrayList(sum, new CastOperator(Type.DOUBLE, count)), divide));
+                if (decimal(sumType)) {
+                    // StarRocks' own sum/count rewrite for decimal averages, so scale and rounding are its own
+                    above.put(spec.output, AggregatePushDownUtils.createAvgBySumCount(spec.original, sum, count));
+                } else {
+                    Function divide = Expr.getBuiltinFunction(FunctionSet.DIVIDE,
+                            new Type[] {Type.DOUBLE, Type.DOUBLE}, Function.CompareMode.IS_IDENTICAL);
+                    above.put(spec.output, new CallOperator(FunctionSet.DIVIDE, Type.DOUBLE,
+                            Lists.newArrayList(sum, new CastOperator(Type.DOUBLE, count)), divide));
+                }
                 needsProject = true;
             } else {
                 Part part = spec.parts.get(0);
@@ -306,6 +313,13 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
                                 name, type)), false)
                         : null;
             case FunctionSet.AVG:
+                if (decimal(type) && decimal(call.getType())) {
+                    int scale = ((ScalarType) type).getScalarScale();
+                    return new Spec(output, call, List.of(
+                            new Part(ScanAggregate.Func.SUM, ScanExpr.Cast.toDecimal(new ScanExpr.Column(name), 38, scale),
+                                    ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL128, 38, scale)),
+                            Part.column(ScanAggregate.Func.COUNT, name, Type.BIGINT)), true);
+                }
                 return numeric(type)
                         ? new Spec(output, call, List.of(
                                 new Part(ScanAggregate.Func.SUM, ScanExpr.Cast.toDouble(new ScanExpr.Column(name)),
