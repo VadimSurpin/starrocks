@@ -23,6 +23,7 @@ import com.starrocks.sql.optimizer.OptimizerFactory;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.operator.logical.LogicalJDBCScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalJoinOperator;
+import com.starrocks.sql.optimizer.operator.logical.LogicalProjectOperator;
 import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
@@ -294,5 +295,49 @@ public class FlightJoinKeyReductionRuleTest {
         service.keysByTable.put("dims", List.of(1L, 5_000_000_000L));
         Assertions.assertTrue(run(join(JoinOperator.INNER_JOIN, BinaryPredicateOperator.eq(smallRef, dk), small,
                 dims(flagIs(5), Map.of()))).isEmpty());
+    }
+
+    /** Column pruning leaves a LogicalProject on each scan by the time the rule runs; keys map through it. */
+    private OptExpression projected(LogicalJDBCScanOperator scan, ColumnRefOperator... kept) {
+        Map<ColumnRefOperator, ScalarOperator> map = new LinkedHashMap<>();
+        for (ColumnRefOperator ref : kept) {
+            map.put(ref, ref);
+        }
+        return OptExpression.create(new LogicalProjectOperator(map), OptExpression.create(scan));
+    }
+
+    @Test
+    public void reducesScansThatSitBehindIdentityProjects() {
+        service.keysByTable.put("dims", List.of(10L, 20L));
+        OptExpression input = OptExpression.create(new LogicalJoinOperator(JoinOperator.INNER_JOIN, onKeys()),
+                projected(facts(null, Map.of()), fk), projected(dims(flagIs(5), Map.of()), dk));
+
+        FlightJoinKeyReductionRule rule = FlightJoinKeyReductionRule.INSTANCE;
+        Assertions.assertTrue(rule.check(input, OptimizerFactory.mockContext(factory)));
+        List<OptExpression> result = rule.transform(input, OptimizerFactory.mockContext(factory));
+
+        Assertions.assertEquals(1, result.size());
+        OptExpression left = result.get(0).inputAt(0);
+        Assertions.assertTrue(left.getOp() instanceof LogicalProjectOperator);
+        Assertions.assertTrue(predicateOf(left.inputAt(0)) instanceof InPredicateOperator);
+        Assertions.assertEquals(List.of("sales.dims.dk where (flag = 5)"), service.requests);
+        Assertions.assertEquals(flagIs(5), predicateOf(result.get(0).inputAt(1).inputAt(0)));
+    }
+
+    @Test
+    public void declinesWhenAProjectComputesTheKey() {
+        service.keysByTable.put("dims", List.of(10L));
+        Map<ColumnRefOperator, ScalarOperator> computed = new LinkedHashMap<>();
+        ColumnRefOperator shifted = factory.create("shifted", Type.BIGINT, true);
+        computed.put(shifted, new CallOperator("add", Type.BIGINT,
+                new ArrayList<>(List.of(fk, ConstantOperator.createBigint(1)))));
+        OptExpression leftProject = OptExpression.create(new LogicalProjectOperator(computed),
+                OptExpression.create(facts(null, Map.of())));
+        OptExpression input = OptExpression.create(
+                new LogicalJoinOperator(JoinOperator.INNER_JOIN, BinaryPredicateOperator.eq(shifted, dk)),
+                leftProject, projected(dims(flagIs(5), Map.of()), dk));
+        FlightJoinKeyReductionRule rule = FlightJoinKeyReductionRule.INSTANCE;
+        Assertions.assertFalse(rule.check(input, OptimizerFactory.mockContext(factory)));
+        Assertions.assertTrue(service.requests.isEmpty());
     }
 }

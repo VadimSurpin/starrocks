@@ -27,6 +27,7 @@ import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.logical.LogicalJDBCScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalJoinOperator;
+import com.starrocks.sql.optimizer.operator.logical.LogicalProjectOperator;
 import com.starrocks.sql.optimizer.operator.pattern.Pattern;
 import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
@@ -92,21 +93,55 @@ public class FlightJoinKeyReductionRule extends TransformationRule {
                 || type == PrimitiveType.BIGINT;
     }
 
-    private static LogicalJDBCScanOperator flightScan(OptExpression expression) {
-        if (!(expression.getOp() instanceof LogicalJDBCScanOperator)) {
-            return null;
+    /** One input of the join: a Flight scan, possibly behind the column-pruning project the optimizer leaves there. */
+    private static final class Side {
+        private final LogicalJDBCScanOperator scan;
+        private final LogicalProjectOperator project;
+
+        private Side(LogicalJDBCScanOperator scan, LogicalProjectOperator project) {
+            this.scan = scan;
+            this.project = project;
         }
-        LogicalJDBCScanOperator scan = (LogicalJDBCScanOperator) expression.getOp();
-        if (!(scan.getTable() instanceof FlightTable)
-                || !((FlightTable) scan.getTable()).getConfig().isJoinKeyReduction()
-                || scan.getFlightAggregation() != null || scan.getLimit() != -1) {
-            return null;
+
+        /** The scan column a join column stands for, or null when it is anything but a plain scan column. */
+        private ColumnRefOperator scanColumn(ColumnRefOperator ref) {
+            ScalarOperator value = ref;
+            if (project != null) {
+                value = project.getColumnRefMap().get(ref);
+            }
+            return value instanceof ColumnRefOperator && scan.getColRefToColumnMetaMap().containsKey(value)
+                    ? (ColumnRefOperator) value : null;
         }
-        return scan;
+
+        private OptExpression withPredicate(ScalarOperator predicate) {
+            OptExpression newScan = OptExpression.create(new LogicalJDBCScanOperator.Builder().withOperator(scan)
+                    .setPredicate(predicate).build());
+            return project == null ? newScan : OptExpression.create(project, newScan);
+        }
     }
 
-    private static List<KeyPair> equiKeys(LogicalJoinOperator join, LogicalJDBCScanOperator left,
-                                          LogicalJDBCScanOperator right) {
+    private static Side side(OptExpression expression) {
+        LogicalJDBCScanOperator scan;
+        LogicalProjectOperator project = null;
+        if (expression.getOp() instanceof LogicalProjectOperator && expression.arity() == 1
+                && expression.inputAt(0).getOp() instanceof LogicalJDBCScanOperator) {
+            project = (LogicalProjectOperator) expression.getOp();
+            scan = (LogicalJDBCScanOperator) expression.inputAt(0).getOp();
+        } else if (expression.getOp() instanceof LogicalJDBCScanOperator) {
+            scan = (LogicalJDBCScanOperator) expression.getOp();
+        } else {
+            return null;
+        }
+        if (!(scan.getTable() instanceof FlightTable)
+                || !((FlightTable) scan.getTable()).getConfig().isJoinKeyReduction()
+                || scan.getFlightAggregation() != null || scan.getLimit() != -1 || scan.getProjection() != null) {
+            return null;
+        }
+        return new Side(scan, project);
+    }
+
+    /** Equi-join conditions between plain integer scan columns of the two sides, as (left, right) scan columns. */
+    private static List<KeyPair> equiKeys(LogicalJoinOperator join, Side left, Side right) {
         List<KeyPair> pairs = new ArrayList<>();
         if (join.getOnPredicate() == null) {
             return pairs;
@@ -120,17 +155,17 @@ public class FlightJoinKeyReductionRule extends TransformationRule {
             }
             ColumnRefOperator a = (ColumnRefOperator) conjunct.getChild(0);
             ColumnRefOperator b = (ColumnRefOperator) conjunct.getChild(1);
-            boolean aLeft = left.getColRefToColumnMetaMap().containsKey(a);
-            boolean bLeft = left.getColRefToColumnMetaMap().containsKey(b);
-            boolean aRight = right.getColRefToColumnMetaMap().containsKey(a);
-            boolean bRight = right.getColRefToColumnMetaMap().containsKey(b);
-            if (!(aLeft && bRight) && !(aRight && bLeft)) {
+            ColumnRefOperator leftRef = left.scanColumn(a) != null && right.scanColumn(b) != null ? a
+                    : left.scanColumn(b) != null && right.scanColumn(a) != null ? b : null;
+            if (leftRef == null) {
                 continue;
             }
-            ColumnRefOperator leftRef = aLeft ? a : b;
-            ColumnRefOperator rightRef = aLeft ? b : a;
-            if (isIntegral(leftRef.getType().getPrimitiveType()) && isIntegral(rightRef.getType().getPrimitiveType())) {
-                pairs.add(new KeyPair(leftRef, rightRef));
+            ColumnRefOperator rightRef = leftRef == a ? b : a;
+            ColumnRefOperator leftColumn = left.scanColumn(leftRef);
+            ColumnRefOperator rightColumn = right.scanColumn(rightRef);
+            if (isIntegral(leftColumn.getType().getPrimitiveType())
+                    && isIntegral(rightColumn.getType().getPrimitiveType())) {
+                pairs.add(new KeyPair(leftColumn, rightColumn));
             }
         }
         return pairs;
@@ -163,22 +198,22 @@ public class FlightJoinKeyReductionRule extends TransformationRule {
         if (!inner && type != JoinOperator.LEFT_SEMI_JOIN && type != JoinOperator.RIGHT_SEMI_JOIN) {
             return List.of();
         }
-        LogicalJDBCScanOperator left = flightScan(input.inputAt(0));
-        LogicalJDBCScanOperator right = flightScan(input.inputAt(1));
+        Side left = side(input.inputAt(0));
+        Side right = side(input.inputAt(1));
         if (left == null || right == null || equiKeys(join, left, right).isEmpty()) {
             return List.of();
         }
         List<Direction> result = new ArrayList<>();
         // keys come from the right side and restrict the left one
         if (inner || type == JoinOperator.LEFT_SEMI_JOIN) {
-            ScanPredicate filter = pushableFilter(right);
+            ScanPredicate filter = pushableFilter(right.scan);
             if (filter != null) {
                 result.add(new Direction(0, filter));
             }
         }
         // keys come from the left side and restrict the right one
         if (inner || type == JoinOperator.RIGHT_SEMI_JOIN) {
-            ScanPredicate filter = pushableFilter(left);
+            ScanPredicate filter = pushableFilter(left.scan);
             if (filter != null) {
                 result.add(new Direction(1, filter));
             }
@@ -194,17 +229,18 @@ public class FlightJoinKeyReductionRule extends TransformationRule {
     @Override
     public List<OptExpression> transform(OptExpression input, OptimizerContext context) {
         LogicalJoinOperator join = (LogicalJoinOperator) input.getOp();
-        LogicalJDBCScanOperator[] scans = {flightScan(input.inputAt(0)), flightScan(input.inputAt(1))};
-        List<KeyPair> pairs = equiKeys(join, scans[0], scans[1]);
-        ScalarOperator[] reduced = {scans[0].getPredicate(), scans[1].getPredicate()};
+        Side[] sides = {side(input.inputAt(0)), side(input.inputAt(1))};
+        List<KeyPair> pairs = equiKeys(join, sides[0], sides[1]);
+        ScalarOperator[] reduced = {sides[0].scan.getPredicate(), sides[1].scan.getPredicate()};
         boolean changed = false;
         for (Direction direction : directions(input)) {
             int source = 1 - direction.target;
-            FlightTable sourceTable = (FlightTable) scans[source].getTable();
+            FlightTable sourceTable = (FlightTable) sides[source].scan.getTable();
             for (KeyPair pair : pairs) {
                 ColumnRefOperator sourceRef = source == 0 ? pair.left : pair.right;
                 ColumnRefOperator targetRef = source == 0 ? pair.right : pair.left;
-                Optional<List<Long>> keys = fetchKeys(sourceTable, scans[source], sourceRef, direction.sourceFilter);
+                Optional<List<Long>> keys = fetchKeys(sourceTable, sides[source].scan, sourceRef,
+                        direction.sourceFilter);
                 if (keys.isEmpty() || keys.get().isEmpty()) {
                     continue;
                 }
@@ -222,9 +258,8 @@ public class FlightJoinKeyReductionRule extends TransformationRule {
         }
         List<OptExpression> children = new ArrayList<>();
         for (int i = 0; i < 2; i++) {
-            children.add(reduced[i] == scans[i].getPredicate() ? input.inputAt(i)
-                    : OptExpression.create(new LogicalJDBCScanOperator.Builder().withOperator(scans[i])
-                            .setPredicate(reduced[i]).build()));
+            children.add(reduced[i] == sides[i].scan.getPredicate() ? input.inputAt(i)
+                    : sides[i].withPredicate(reduced[i]));
         }
         return Lists.newArrayList(OptExpression.create(join, children));
     }
