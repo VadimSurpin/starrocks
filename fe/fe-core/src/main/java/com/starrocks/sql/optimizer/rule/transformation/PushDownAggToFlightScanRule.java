@@ -20,7 +20,9 @@ import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.PrimitiveType;
+import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.Type;
+import com.starrocks.connector.flight.FlightExprConverter;
 import com.starrocks.connector.flight.FlightPredicateConverter;
 import com.starrocks.connector.flight.FlightTable;
 import com.starrocks.sql.optimizer.OptExpression;
@@ -40,6 +42,7 @@ import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.RuleType;
 import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
+import pro.surpin.data.arrowflight.starrocks.ScanExpr;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.util.ArrayList;
@@ -54,9 +57,11 @@ import java.util.Set;
  * return one partial aggregate per endpoint; the original aggregate stays above the scan and merges the partials:
  * COUNT merges as SUM, SUM as SUM, MIN as MIN, MAX as MAX and AVG becomes SUM(sum) / SUM(count).
  *
- * <p>Only what the server computes exactly is pushed. Its SUM always returns DOUBLE, so SUM and the AVG numerator
- * are limited to FLOAT/DOUBLE inputs for SUM (AVG accepts any numeric input because its result is a DOUBLE anyway);
- * MIN/MAX are limited to numeric inputs; DISTINCT, expressions, strings and decimals stay in StarRocks.
+ * <p>Only what the server computes exactly is pushed. SUM is pushed over FLOAT/DOUBLE inputs (summed as DOUBLE) and
+ * over exact DECIMAL inputs, including arithmetic and CASE expressions {@link FlightExprConverter} accepts; a decimal
+ * sum is cast to DECIMAL(38, scale) on the server so the partials add up exactly. AVG accepts any numeric column
+ * because its result is a DOUBLE anyway. MIN/MAX are limited to numeric and decimal columns. DISTINCT, strings and
+ * integral SUM stay in StarRocks.
  */
 public class PushDownAggToFlightScanRule extends TransformationRule {
     public static final PushDownAggToFlightScanRule WITH_PROJECT = new PushDownAggToFlightScanRule(true);
@@ -78,6 +83,10 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
 
     private static boolean numeric(Type type) {
         return INTEGRAL.contains(type.getPrimitiveType()) || FLOATING.contains(type.getPrimitiveType());
+    }
+
+    private static boolean decimal(Type type) {
+        return type.isDecimalV3();
     }
 
     private LogicalJDBCScanOperator scanOf(OptExpression input) {
@@ -180,7 +189,7 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
             for (int p = 0; p < spec.parts.size(); p++) {
                 Part part = spec.parts.get(p);
                 String alias = "__agg" + partials.size();
-                partials.add(new ScanAggregate.Partial(part.func, part.column, alias));
+                partials.add(new ScanAggregate.Partial(part.func, part.input, alias));
                 Column column = new Column(alias, part.type);
                 column.setIsAllowNull(true);
                 ColumnRefOperator ref = factory.create(alias, part.type, true);
@@ -226,18 +235,25 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
     private CallOperator mergeCall(String name, Type type, ColumnRefOperator partial, Function reuse) {
         Function fn = reuse != null ? reuse : Expr.getBuiltinFunction(name, new Type[] {type},
                 Function.CompareMode.IS_IDENTICAL);
+        if (fn == null) {
+            fn = Expr.getBuiltinFunction(name, new Type[] {type}, Function.CompareMode.IS_NONSTRICT_SUPERTYPE_OF);
+        }
         return new CallOperator(name, type, Lists.newArrayList(partial), fn);
     }
 
     private static final class Part {
         private final ScanAggregate.Func func;
-        private final String column;
+        private final ScanExpr input;
         private final Type type;
 
-        private Part(ScanAggregate.Func func, String column, Type type) {
+        private Part(ScanAggregate.Func func, ScanExpr input, Type type) {
             this.func = func;
-            this.column = column;
+            this.input = input;
             this.type = type;
+        }
+
+        private static Part column(ScanAggregate.Func func, String column, Type type) {
+            return new Part(func, new ScanExpr.Column(column), type);
         }
     }
 
@@ -268,7 +284,11 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
         if (args.size() != 1 || !(args.get(0) instanceof ColumnRefOperator)) {
             return null;
         }
-        ColumnRefOperator column = scanColumn(input, (ColumnRefOperator) args.get(0));
+        ColumnRefOperator argument = (ColumnRefOperator) args.get(0);
+        if (fn.equals(FunctionSet.SUM)) {
+            return sumSpec(input, output, call, argument, scanColumns);
+        }
+        ColumnRefOperator column = scanColumn(input, argument);
         if (column == null) {
             return null;
         }
@@ -276,26 +296,70 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
         String name = scanColumns.get(column).getName();
         switch (fn) {
             case FunctionSet.COUNT:
-                return new Spec(output, call, List.of(new Part(ScanAggregate.Func.COUNT, name, Type.BIGINT)), false);
-            case FunctionSet.SUM:
-                return FLOATING.contains(type.getPrimitiveType())
-                        ? new Spec(output, call, List.of(new Part(ScanAggregate.Func.SUM, name, Type.DOUBLE)), false)
-                        : null;
+                return new Spec(output, call, List.of(Part.column(ScanAggregate.Func.COUNT, name, Type.BIGINT)),
+                        false);
             case FunctionSet.MIN:
             case FunctionSet.MAX:
-                return numeric(type)
-                        ? new Spec(output, call, List.of(new Part(
+                return numeric(type) || decimal(type)
+                        ? new Spec(output, call, List.of(Part.column(
                                 fn.equals(FunctionSet.MIN) ? ScanAggregate.Func.MIN : ScanAggregate.Func.MAX,
                                 name, type)), false)
                         : null;
             case FunctionSet.AVG:
                 return numeric(type)
-                        ? new Spec(output, call, List.of(new Part(ScanAggregate.Func.SUM, name, Type.DOUBLE),
-                                new Part(ScanAggregate.Func.COUNT, name, Type.BIGINT)), true)
+                        ? new Spec(output, call, List.of(
+                                new Part(ScanAggregate.Func.SUM, ScanExpr.Cast.toDouble(new ScanExpr.Column(name)),
+                                        Type.DOUBLE),
+                                Part.column(ScanAggregate.Func.COUNT, name, Type.BIGINT)), true)
                         : null;
             default:
                 return null;
         }
+    }
+
+    /**
+     * SUM over a floating column (summed as DOUBLE), or over an exact decimal column or expression, which is cast to
+     * DECIMAL(38, scale) on the server so that the per-endpoint partials add up with no rounding.
+     */
+    private Spec sumSpec(OptExpression input, ColumnRefOperator output, CallOperator call, ColumnRefOperator argument,
+                         Map<ColumnRefOperator, Column> scanColumns) {
+        Type type = argument.getType();
+        ColumnRefOperator plain = scanColumn(input, argument);
+        if (plain != null && FLOATING.contains(type.getPrimitiveType())) {
+            return new Spec(output, call, List.of(new Part(ScanAggregate.Func.SUM,
+                    ScanExpr.Cast.toDouble(new ScanExpr.Column(scanColumns.get(plain).getName())), Type.DOUBLE)),
+                    false);
+        }
+        boolean exactDecimal = decimal(type) && decimal(call.getType())
+                && ((ScalarType) type).getScalarScale() == ((ScalarType) call.getType()).getScalarScale()
+                && ((ScalarType) call.getType()).getScalarPrecision() == 38;
+        if (!exactDecimal && !type.getPrimitiveType().equals(PrimitiveType.DOUBLE)) {
+            return null;
+        }
+        ScalarOperator value = argumentValue(input, argument);
+        Optional<ScanExpr> expr = new FlightExprConverter(ref -> {
+            Column column = scanColumns.get(ref);
+            return column == null ? null : column.getName();
+        }).convert(value);
+        if (expr.isEmpty()) {
+            return null;
+        }
+        if (exactDecimal) {
+            int scale = ((ScalarType) type).getScalarScale();
+            return new Spec(output, call, List.of(new Part(ScanAggregate.Func.SUM,
+                    ScanExpr.Cast.toDecimal(expr.get(), 38, scale), call.getType())), false);
+        }
+        return new Spec(output, call, List.of(new Part(ScanAggregate.Func.SUM, ScanExpr.Cast.toDouble(expr.get()),
+                Type.DOUBLE)), false);
+    }
+
+    /** The expression an aggregate argument stands for: the projected value below the aggregate, if there is one. */
+    private ScalarOperator argumentValue(OptExpression input, ColumnRefOperator argument) {
+        if (!withProject) {
+            return argument;
+        }
+        ScalarOperator value = ((LogicalProjectOperator) input.inputAt(0).getOp()).getColumnRefMap().get(argument);
+        return value == null ? argument : value;
     }
 
     /** count(1) arrives as a count over a constant, possibly through the projection below the aggregate. */

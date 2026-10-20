@@ -36,7 +36,7 @@ public class LogicalJDBCScanOperatorFlightAggregationTest {
 
     private static ScanAggregate aggregate() {
         return new ScanAggregate(List.of(), List.of(
-                new ScanAggregate.Partial(ScanAggregate.Func.COUNT_STAR, null, "__agg0")));
+                ScanAggregate.Partial.column(ScanAggregate.Func.COUNT_STAR, null, "__agg0")));
     }
 
     @Test
