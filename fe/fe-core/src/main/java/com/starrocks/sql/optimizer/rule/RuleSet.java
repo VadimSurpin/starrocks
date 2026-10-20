@@ -71,6 +71,7 @@ import com.starrocks.sql.optimizer.rule.transformation.ExistentialApply2JoinRule
 import com.starrocks.sql.optimizer.rule.transformation.ExistentialApply2OuterJoinRule;
 import com.starrocks.sql.optimizer.rule.transformation.ExternalScanPartitionPruneRule;
 import com.starrocks.sql.optimizer.rule.transformation.FineGrainedRangePredicateRule;
+import com.starrocks.sql.optimizer.rule.transformation.FlightJoinKeyReductionRule;
 import com.starrocks.sql.optimizer.rule.transformation.GroupByCountDistinctDataSkewEliminateRule;
 import com.starrocks.sql.optimizer.rule.transformation.InlineOneCTEConsumeRule;
 import com.starrocks.sql.optimizer.rule.transformation.IntersectAddDistinctRule;
@@ -423,6 +424,7 @@ public class RuleSet {
                     new PushDownAggToMetaScanRule(),
                     PushDownAggToFlightScanRule.WITH_PROJECT,
                     PushDownAggToFlightScanRule.WITHOUT_PROJECT,
+                    FlightJoinKeyReductionRule.INSTANCE,
                     new PushDownFlatJsonMetaToMetaScanRule(),
                     new RewriteSimpleAggToMetaScanRule(),
                     RewriteSimpleAggToHDFSScanRule.SCAN_AND_PROJECT,

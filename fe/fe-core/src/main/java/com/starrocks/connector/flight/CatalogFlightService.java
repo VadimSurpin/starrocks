@@ -29,6 +29,7 @@ import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -102,6 +103,12 @@ public class CatalogFlightService implements FlightService {
     @Override
     public FlightInfo planScan(String schema, String table, ScanPredicate where, ScanAggregate aggregate) {
         return call(() -> catalog.planScan(schema, table, where, aggregate));
+    }
+
+    @Override
+    public Optional<List<Long>> distinctLongKeys(String schema, String table, String column, ScanPredicate where,
+                                                 int maxKeys) {
+        return call(() -> catalog.distinctLongKeys(schema, table, column, where, maxKeys));
     }
 
     @Override

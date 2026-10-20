@@ -20,6 +20,7 @@ import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.util.List;
+import java.util.Optional;
 
 /** The Flight SQL operations the catalog needs; a seam so metadata can be tested without a server. */
 public interface FlightService extends AutoCloseable {
@@ -34,6 +35,16 @@ public interface FlightService extends AutoCloseable {
 
     /** Plans a partial-aggregate query; every endpoint returns its own partial result. */
     FlightInfo planScan(String schema, String table, ScanPredicate where, ScanAggregate aggregate);
+
+    /**
+     * Lists the distinct non-null values of an integer column of an optionally filtered table, or returns empty when
+     * there are more than {@code maxKeys} (or the column is not an integer): the keys a join partner may be
+     * restricted to.
+     */
+    default Optional<List<Long>> distinctLongKeys(String schema, String table, String column, ScanPredicate where,
+                                                  int maxKeys) {
+        return Optional.empty();
+    }
 
     @Override
     void close();
