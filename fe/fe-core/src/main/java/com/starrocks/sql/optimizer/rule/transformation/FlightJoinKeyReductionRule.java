@@ -42,6 +42,12 @@ import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Semi-join reduction for two Flight scans: when one side of an equi-join has a selective filter that the Flight
@@ -57,6 +63,12 @@ import java.util.Optional;
  */
 public class FlightJoinKeyReductionRule extends TransformationRule {
     private static final Logger LOG = LogManager.getLogger(FlightJoinKeyReductionRule.class);
+    // Key fetches run here so planning can stop waiting on a slow Flight server; threads are daemons and idle out.
+    private static final ExecutorService FETCHER = Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(runnable, "flight-join-key-fetch");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public static final FlightJoinKeyReductionRule INSTANCE = new FlightJoinKeyReductionRule();
 
@@ -267,10 +279,22 @@ public class FlightJoinKeyReductionRule extends TransformationRule {
     private static Optional<List<Long>> fetchKeys(FlightTable table, LogicalJDBCScanOperator scan,
                                                   ColumnRefOperator keyRef, ScanPredicate filter) {
         String column = scan.getColRefToColumnMetaMap().get(keyRef).getName();
+        int timeoutMs = table.getConfig().getJoinKeyReductionTimeoutMs();
+        Future<Optional<List<Long>>> fetch = FETCHER.submit(() -> table.getService().distinctLongKeys(
+                table.getCatalogDBName(), table.getName(), column, filter,
+                table.getConfig().getJoinKeyReductionMaxKeys()));
         try {
-            return table.getService().distinctLongKeys(table.getCatalogDBName(), table.getName(), column, filter,
-                    table.getConfig().getJoinKeyReductionMaxKeys());
-        } catch (RuntimeException e) {
+            return fetch.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            fetch.cancel(true);
+            LOG.warn("Flight join key reduction skipped, the keys of {}.{} took longer than {} ms",
+                    table.getCatalogDBName(), table.getName(), timeoutMs);
+            return Optional.empty();
+        } catch (InterruptedException e) {
+            fetch.cancel(true);
+            Thread.currentThread().interrupt();
+            return Optional.empty();
+        } catch (ExecutionException | RuntimeException e) {
             LOG.warn("Flight join key reduction skipped, cannot fetch the keys of {}.{}: {}",
                     table.getCatalogDBName(), table.getName(), e.getMessage());
             return Optional.empty();

@@ -51,6 +51,7 @@ public class FlightJoinKeyReductionRuleTest {
         private final Map<String, List<Long>> keysByTable = new HashMap<>();
         private final List<String> requests = new ArrayList<>();
         private int lastMaxKeys;
+        private long delayMillis;
 
         @Override
         public List<String> schemas() {
@@ -82,6 +83,14 @@ public class FlightJoinKeyReductionRuleTest {
                                                      ScanPredicate where, int maxKeys) {
             requests.add(schema + "." + table + "." + column + " where " + (where == null ? "-" : where.toSql()));
             lastMaxKeys = maxKeys;
+            if (delayMillis > 0) {
+                try {
+                    Thread.sleep(delayMillis);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+            }
             return Optional.ofNullable(keysByTable.get(table));
         }
 
@@ -339,5 +348,18 @@ public class FlightJoinKeyReductionRuleTest {
         FlightJoinKeyReductionRule rule = FlightJoinKeyReductionRule.INSTANCE;
         Assertions.assertFalse(rule.check(input, OptimizerFactory.mockContext(factory)));
         Assertions.assertTrue(service.requests.isEmpty());
+    }
+
+    @Test
+    public void slowKeyFetchIsAbandonedAndLeavesThePlanUnreduced() {
+        service.keysByTable.put("dims", List.of(10L, 20L));
+        service.delayMillis = 10_000;
+        long start = System.nanoTime();
+        List<OptExpression> result = run(join(JoinOperator.INNER_JOIN, onKeys(), facts(null, Map.of()),
+                dims(flagIs(5), Map.of("flight.join_key_reduction.timeout_ms", "200"))));
+        long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+        Assertions.assertTrue(result.isEmpty(), "no reduced plan when the key fetch times out");
+        Assertions.assertTrue(elapsedMillis < 5_000, "planning waited " + elapsedMillis + " ms");
     }
 }

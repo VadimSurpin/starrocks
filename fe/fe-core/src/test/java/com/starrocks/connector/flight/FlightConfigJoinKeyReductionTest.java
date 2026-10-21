@@ -52,4 +52,15 @@ public class FlightConfigJoinKeyReductionTest {
         Assertions.assertThrows(StarRocksConnectorException.class, () -> config(null, "0"));
         Assertions.assertThrows(StarRocksConnectorException.class, () -> config(null, "many"));
     }
+
+    @Test
+    public void keyFetchHasAOneSecondBudgetByDefaultAndItIsTunable() {
+        Assertions.assertEquals(1000, config(null, null).getJoinKeyReductionTimeoutMs());
+        Map<String, String> props = new HashMap<>();
+        props.put("flight.uri", "grpc://localhost:8815");
+        props.put("flight.join_key_reduction.timeout_ms", "250");
+        Assertions.assertEquals(250, FlightConfig.from(props).getJoinKeyReductionTimeoutMs());
+        props.put("flight.join_key_reduction.timeout_ms", "0");
+        Assertions.assertThrows(StarRocksConnectorException.class, () -> FlightConfig.from(props));
+    }
 }

@@ -30,6 +30,8 @@ public final class FlightConfig {
     public static final String JOIN_KEY_REDUCTION_KEY = "flight.join_key_reduction";
     public static final String JOIN_KEY_REDUCTION_MAX_KEYS_KEY = "flight.join_key_reduction.max_keys";
     public static final int DEFAULT_JOIN_KEY_REDUCTION_MAX_KEYS = 100_000;
+    public static final String JOIN_KEY_REDUCTION_TIMEOUT_KEY = "flight.join_key_reduction.timeout_ms";
+    public static final int DEFAULT_JOIN_KEY_REDUCTION_TIMEOUT_MS = 1000;
 
     /** Supported authentication schemes. */
     public enum AuthType { NONE, TOKEN }
@@ -41,12 +43,15 @@ public final class FlightConfig {
     private final boolean aggregationPushdown;
     private final boolean joinKeyReduction;
     private final int joinKeyReductionMaxKeys;
+    private final int joinKeyReductionTimeoutMs;
 
     private FlightConfig(String uri, AuthType authType, String token, int cacheTtlSeconds,
-                         boolean aggregationPushdown, boolean joinKeyReduction, int joinKeyReductionMaxKeys) {
+                         boolean aggregationPushdown, boolean joinKeyReduction, int joinKeyReductionMaxKeys,
+                         int joinKeyReductionTimeoutMs) {
         this.aggregationPushdown = aggregationPushdown;
         this.joinKeyReduction = joinKeyReduction;
         this.joinKeyReductionMaxKeys = joinKeyReductionMaxKeys;
+        this.joinKeyReductionTimeoutMs = joinKeyReductionTimeoutMs;
         this.uri = uri;
         this.authType = authType;
         this.token = token;
@@ -129,7 +134,20 @@ public final class FlightConfig {
                         + " must be a positive integer, got: " + maxKeysValue);
             }
         }
-        return new FlightConfig(uri, authType, token, ttl, aggregationPushdown, joinKeyReduction, maxKeys);
+        int timeoutMs = DEFAULT_JOIN_KEY_REDUCTION_TIMEOUT_MS;
+        String timeoutValue = properties.get(JOIN_KEY_REDUCTION_TIMEOUT_KEY);
+        if (timeoutValue != null) {
+            try {
+                timeoutMs = Integer.parseInt(timeoutValue.trim());
+            } catch (NumberFormatException e) {
+                timeoutMs = -1;
+            }
+            if (timeoutMs <= 0) {
+                throw new StarRocksConnectorException(JOIN_KEY_REDUCTION_TIMEOUT_KEY
+                        + " must be a positive integer, got: " + timeoutValue);
+            }
+        }
+        return new FlightConfig(uri, authType, token, ttl, aggregationPushdown, joinKeyReduction, maxKeys, timeoutMs);
     }
 
     public boolean isAggregationPushdown() {
@@ -143,6 +161,11 @@ public final class FlightConfig {
 
     public int getJoinKeyReductionMaxKeys() {
         return joinKeyReductionMaxKeys;
+    }
+
+    /** How long planning may wait for the join keys of one scan before it gives up on the reduction. */
+    public int getJoinKeyReductionTimeoutMs() {
+        return joinKeyReductionTimeoutMs;
     }
 
     public String getUri() {
