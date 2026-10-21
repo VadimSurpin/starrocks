@@ -18,6 +18,7 @@
 
 #include "column/chunk.h"
 #include "connector/flight_chunk_converter.h"
+#include "connector/flight_runtime_filter.h"
 #include "exec/exec_node.h"
 #include "fmt/format.h"
 #include "runtime/descriptors.h"
@@ -56,6 +57,19 @@ std::string FlightDataSource::name() const {
 Status FlightDataSource::open(RuntimeState* state) {
     const TFlightScanNode& node = _provider->_flight_scan_node;
     _tuple_desc = state->desc_tbl().get_tuple_descriptor(node.tuple_id);
+
+    auto in_filters = collect_flight_in_filters(_conjunct_ctxs, [this](SlotId slot) -> std::string {
+        for (const SlotDescriptor* desc : _tuple_desc->slots()) {
+            if (desc->id() == slot) {
+                return desc->col_name();
+            }
+        }
+        return {};
+    });
+    for (const FlightInFilter& filter : in_filters) {
+        LOG(INFO) << "Flight scan at " << node.flight_uri << ": runtime IN-filter on " << filter.column << " with "
+                  << filter.values.size() << " values";
+    }
 
     // An endpoint without a location, or one that asks to reuse the connection, is served by the
     // Flight server the catalog was created with.
