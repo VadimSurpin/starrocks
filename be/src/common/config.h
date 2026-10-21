@@ -475,6 +475,10 @@ CONF_Int32(arrow_flight_port, "-1");
 // Whether a Flight scan sends the runtime IN-filters of its joins to the Flight server so the server drops the rows
 // the join would discard. The server ignores what it cannot apply, so this only changes how much data travels.
 CONF_mBool(flight_runtime_in_pushdown, "false");
+// Same for the bloom filters of joins whose build side is too large for an IN-filter. A bloom filter is sent as
+// its raw bit directory, so one costs up to flight_runtime_bloom_max_bytes on the wire per scan range.
+CONF_mBool(flight_runtime_bloom_pushdown, "false");
+CONF_mInt64(flight_runtime_bloom_max_bytes, "50331648");
 
 // Used for mini Load. mini load data file will be removed after this time.
 CONF_Int64(load_data_reserve_hours, "4");

@@ -60,20 +60,34 @@ Status FlightDataSource::open(RuntimeState* state) {
     _tuple_desc = state->desc_tbl().get_tuple_descriptor(node.tuple_id);
 
     std::string ticket = _scan_range.ticket;
-    if (config::flight_runtime_in_pushdown) {
-        auto in_filters = collect_flight_in_filters(_conjunct_ctxs, [this](SlotId slot) -> std::string {
+    if (config::flight_runtime_in_pushdown || config::flight_runtime_bloom_pushdown) {
+        auto column_of = [this](SlotId slot) -> std::string {
             for (const SlotDescriptor* desc : _tuple_desc->slots()) {
                 if (desc->id() == slot) {
                     return desc->col_name();
                 }
             }
             return {};
-        });
+        };
+        std::vector<FlightInFilter> in_filters;
+        if (config::flight_runtime_in_pushdown) {
+            in_filters = collect_flight_in_filters(_conjunct_ctxs, column_of);
+        }
+        std::vector<FlightBloomFilter> bloom_filters;
+        if (config::flight_runtime_bloom_pushdown && _runtime_filters != nullptr) {
+            bloom_filters = collect_flight_bloom_filters(
+                    *_runtime_filters, runtime_membership_filter_eval_context.driver_sequence, column_of);
+        }
         for (const FlightInFilter& filter : in_filters) {
             LOG(INFO) << "Flight scan at " << node.flight_uri << ": sending runtime IN-filter on " << filter.column
                       << " with " << filter.values.size() << " values";
         }
-        ticket = attach_flight_filter_block(ticket, encode_flight_filter_block(in_filters));
+        for (const FlightBloomFilter& filter : bloom_filters) {
+            LOG(INFO) << "Flight scan at " << node.flight_uri << ": offering runtime bloom filter on " << filter.column
+                      << " with " << filter.partitions.size() << " partitions";
+        }
+        ticket = attach_flight_filter_block(
+                ticket, encode_flight_filter_block(in_filters, bloom_filters, config::flight_runtime_bloom_max_bytes));
     }
 
     // An endpoint without a location, or one that asks to reuse the connection, is served by the

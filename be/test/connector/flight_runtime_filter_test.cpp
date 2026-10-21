@@ -22,6 +22,7 @@
 
 #include "exprs/column_ref.h"
 #include "exprs/in_const_predicate.hpp"
+#include "exprs/runtime_filter.h"
 #include "runtime/runtime_state.h"
 #include "testutil/column_test_helper.h"
 
@@ -118,6 +119,57 @@ TEST_F(FlightRuntimeFilterTest, block_is_appended_to_the_ticket_as_protobuf_fiel
     EXPECT_EQ(static_cast<char>(0x01), result[ticket.size() + 2]);
     EXPECT_EQ(block, result.substr(ticket.size() + 3));
     EXPECT_EQ(ticket, attach_flight_filter_block(ticket, ""));
+}
+
+TEST_F(FlightRuntimeFilterTest, bloom_filters_are_sent_as_raw_directories_with_witnesses) {
+    SimdBlockFilter bloom;
+    bloom.init(1000); // 2^5 buckets of 32 bytes
+    bloom.insert_hash(12345);
+    FlightBloomFilter filter{"l_orderkey", {&bloom}, {{7, true}, {-8, false}}};
+
+    std::string block = encode_flight_filter_block({}, {filter}, 1 << 20);
+
+    ASSERT_FALSE(block.empty());
+    EXPECT_EQ(0x41524632u, read_u32(block, 0)); // "ARF2"
+    EXPECT_EQ(0u, read_u32(block, 4));          // no IN-filters
+    EXPECT_EQ(1u, read_u32(block, 8));          // one bloom filter
+    EXPECT_EQ(10u, read_u32(block, 12));        // name length
+    EXPECT_EQ("l_orderkey", block.substr(16, 10));
+    EXPECT_EQ(1u, read_u32(block, 26));         // partitions
+    EXPECT_EQ(5u, read_u32(block, 30));         // log2 of the bucket count
+    uint64_t length = 0;
+    memcpy(&length, block.data() + 34, 8);
+    EXPECT_EQ(1024u, length);
+    EXPECT_EQ(0, memcmp(bloom.directory(), block.data() + 42, 1024));
+    EXPECT_EQ(2u, read_u32(block, 42 + 1024)); // witnesses
+    int64_t key = 0;
+    memcpy(&key, block.data() + 42 + 1024 + 4, 8);
+    EXPECT_EQ(7, key);
+    EXPECT_EQ(1, block[42 + 1024 + 4 + 8]);
+    EXPECT_EQ(42u + 1024 + 4 + 2 * 9, block.size());
+}
+
+TEST_F(FlightRuntimeFilterTest, a_bloom_filter_over_the_byte_budget_is_left_out) {
+    SimdBlockFilter bloom;
+    bloom.init(1000);
+    FlightBloomFilter filter{"k", {&bloom}, {{1, true}}};
+    EXPECT_TRUE(encode_flight_filter_block({}, {filter}, 512).empty());
+
+    // the IN-filters still go, in the older block
+    std::string block = encode_flight_filter_block({FlightInFilter{"a", {1}}}, {filter}, 512);
+    EXPECT_EQ(0x41524631u, read_u32(block, 0));
+}
+
+TEST_F(FlightRuntimeFilterTest, a_partitioned_bloom_filter_sends_every_partition) {
+    SimdBlockFilter first;
+    SimdBlockFilter second;
+    first.init(100);
+    second.init(100);
+    FlightBloomFilter filter{"k", {&first, &second}, {{1, false}}};
+
+    std::string block = encode_flight_filter_block({}, {filter}, 1 << 20);
+
+    EXPECT_EQ(2u, read_u32(block, 8 + 4 + 1 + 4)); // after the count, name length and name
 }
 
 } // namespace starrocks::connector

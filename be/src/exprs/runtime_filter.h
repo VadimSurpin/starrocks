@@ -167,6 +167,9 @@ public:
     void merge(const SimdBlockFilter& bf);
     bool check_equal(const SimdBlockFilter& bf) const;
     uint32_t directory_mask() const { return _directory_mask; }
+    int log_num_buckets() const { return _log_num_buckets; }
+    // The raw directory: get_alloc_size() bytes of 32-byte buckets, null once the filter was cleared.
+    const void* directory() const { return _directory; }
 
     void clear();
     // whether this bloom filter can be used
@@ -1219,6 +1222,10 @@ public:
     }
 
     size_t num_hash_partitions() const override { return _hash_partition_bf.size(); }
+
+    // The filter of a single-partition build, or the filters of each hash partition otherwise.
+    const SimdBlockFilter& bloom() const { return _bf; }
+    const std::vector<SimdBlockFilter>& partition_blooms() const { return _hash_partition_bf; }
 
     void merge(const RuntimeFilter* rf) override {
         RuntimeMembershipFilter::merge(rf);
