@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include "exprs/column_ref.h"
 #include "exprs/in_const_predicate.hpp"
@@ -71,6 +72,52 @@ TEST_F(FlightRuntimeFilterTest, skips_filters_the_server_cannot_apply) {
             in_filter<int64_t>(TypeDescriptor(TYPE_BIGINT), 99, {1, 2}),
     };
     EXPECT_TRUE(collect_flight_in_filters(conjuncts, name_of).empty());
+}
+
+static uint32_t read_u32(const std::string& s, size_t offset) {
+    uint32_t v;
+    memcpy(&v, s.data() + offset, sizeof(v));
+    return v;
+}
+
+TEST_F(FlightRuntimeFilterTest, filter_block_layout_matches_what_the_server_reads) {
+    std::string block = encode_flight_filter_block({FlightInFilter{"k", {5, -1}}});
+    ASSERT_EQ(4 + 4 + 4 + 1 + 4 + 16, block.size());
+    EXPECT_EQ(0x41524631u, read_u32(block, 0));
+    EXPECT_EQ(1u, read_u32(block, 4));
+    EXPECT_EQ(1u, read_u32(block, 8));
+    EXPECT_EQ('k', block[12]);
+    EXPECT_EQ(2u, read_u32(block, 13));
+    int64_t first;
+    int64_t second;
+    memcpy(&first, block.data() + 17, 8);
+    memcpy(&second, block.data() + 25, 8);
+    EXPECT_EQ(5, first);
+    EXPECT_EQ(-1, second);
+}
+
+TEST_F(FlightRuntimeFilterTest, filters_beyond_the_value_limit_are_left_out) {
+    FlightInFilter big{"big", std::vector<int64_t>(kFlightMaxFilterValues + 1, 1)};
+    FlightInFilter small{"small", {1, 2, 3}};
+    std::string block = encode_flight_filter_block({big, small});
+    EXPECT_EQ(1u, read_u32(block, 4));
+    EXPECT_EQ('s', block[12]);
+    EXPECT_TRUE(encode_flight_filter_block({big}).empty());
+    EXPECT_TRUE(encode_flight_filter_block({}).empty());
+}
+
+TEST_F(FlightRuntimeFilterTest, block_is_appended_to_the_ticket_as_protobuf_field_15) {
+    std::string ticket = "ticket-bytes";
+    std::string block(200, 'x');
+    std::string result = attach_flight_filter_block(ticket, block);
+    ASSERT_EQ(ticket.size() + 1 + 2 + block.size(), result.size());
+    EXPECT_EQ(ticket, result.substr(0, ticket.size()));
+    EXPECT_EQ(static_cast<char>(0x7A), result[ticket.size()]);
+    // 200 as a protobuf varint
+    EXPECT_EQ(static_cast<char>(0xC8), result[ticket.size() + 1]);
+    EXPECT_EQ(static_cast<char>(0x01), result[ticket.size() + 2]);
+    EXPECT_EQ(block, result.substr(ticket.size() + 3));
+    EXPECT_EQ(ticket, attach_flight_filter_block(ticket, ""));
 }
 
 } // namespace starrocks::connector

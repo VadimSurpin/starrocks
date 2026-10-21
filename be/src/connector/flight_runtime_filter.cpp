@@ -87,4 +87,63 @@ std::vector<FlightInFilter> collect_flight_in_filters(const std::vector<ExprCont
     return filters;
 }
 
+namespace {
+
+constexpr uint32_t kBlockMagic = 0x41524631; // "ARF1"
+constexpr uint32_t kTicketFilterTag = (15 << 3) | 2;
+
+template <typename T>
+void put(std::string* out, T value) {
+    // The block is little-endian; every platform StarRocks builds for is too.
+    out->append(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+void put_varint(std::string* out, uint64_t value) {
+    while (value >= 0x80) {
+        out->push_back(static_cast<char>(value | 0x80));
+        value >>= 7;
+    }
+    out->push_back(static_cast<char>(value));
+}
+
+} // namespace
+
+std::string encode_flight_filter_block(const std::vector<FlightInFilter>& filters) {
+    std::vector<const FlightInFilter*> kept;
+    size_t total = 0;
+    for (const FlightInFilter& filter : filters) {
+        if (total + filter.values.size() > kFlightMaxFilterValues) {
+            continue;
+        }
+        total += filter.values.size();
+        kept.push_back(&filter);
+    }
+    if (kept.empty()) {
+        return {};
+    }
+    std::string block;
+    put<uint32_t>(&block, kBlockMagic);
+    put<uint32_t>(&block, static_cast<uint32_t>(kept.size()));
+    for (const FlightInFilter* filter : kept) {
+        put<uint32_t>(&block, static_cast<uint32_t>(filter->column.size()));
+        block.append(filter->column);
+        put<uint32_t>(&block, static_cast<uint32_t>(filter->values.size()));
+        for (int64_t value : filter->values) {
+            put<int64_t>(&block, value);
+        }
+    }
+    return block;
+}
+
+std::string attach_flight_filter_block(const std::string& ticket, const std::string& block) {
+    if (block.empty()) {
+        return ticket;
+    }
+    std::string result = ticket;
+    put_varint(&result, kTicketFilterTag);
+    put_varint(&result, block.size());
+    result.append(block);
+    return result;
+}
+
 } // namespace starrocks::connector

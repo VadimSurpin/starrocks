@@ -472,6 +472,9 @@ CONF_Int32(be_http_num_workers, "48");
 CONF_mInt32(periodic_counter_update_period_ms, "500");
 
 CONF_Int32(arrow_flight_port, "-1");
+// Whether a Flight scan sends the runtime IN-filters of its joins to the Flight server so the server drops the rows
+// the join would discard. The server ignores what it cannot apply, so this only changes how much data travels.
+CONF_mBool(flight_runtime_in_pushdown, "false");
 
 // Used for mini Load. mini load data file will be removed after this time.
 CONF_Int64(load_data_reserve_hours, "4");

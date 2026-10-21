@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -40,5 +41,17 @@ struct FlightInFilter {
 // filter out only costs speed.
 std::vector<FlightInFilter> collect_flight_in_filters(const std::vector<ExprContext*>& conjuncts,
                                                       const std::function<std::string(SlotId)>& column_of);
+
+// Most values the server accepts across the filters of one request; filters past this are left out.
+constexpr size_t kFlightMaxFilterValues = 1'000'000;
+
+// The filter block a Flight server reads: little-endian magic "ARF1", filter count, then per filter the column
+// name (length, bytes) and its values (count, int64 each). Filters beyond kFlightMaxFilterValues values in total
+// are dropped. Returns an empty string when nothing is left to send.
+std::string encode_flight_filter_block(const std::vector<FlightInFilter>& filters);
+
+// A Flight ticket is a protobuf message; field 15, which it does not use, carries the filter block, and
+// appending a field is plain protobuf concatenation, so the signed ticket inside is untouched.
+std::string attach_flight_filter_block(const std::string& ticket, const std::string& block);
 
 } // namespace starrocks::connector

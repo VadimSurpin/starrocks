@@ -17,6 +17,7 @@
 #include <arrow/flight/types.h>
 
 #include "column/chunk.h"
+#include "common/config.h"
 #include "connector/flight_chunk_converter.h"
 #include "connector/flight_runtime_filter.h"
 #include "exec/exec_node.h"
@@ -58,17 +59,21 @@ Status FlightDataSource::open(RuntimeState* state) {
     const TFlightScanNode& node = _provider->_flight_scan_node;
     _tuple_desc = state->desc_tbl().get_tuple_descriptor(node.tuple_id);
 
-    auto in_filters = collect_flight_in_filters(_conjunct_ctxs, [this](SlotId slot) -> std::string {
-        for (const SlotDescriptor* desc : _tuple_desc->slots()) {
-            if (desc->id() == slot) {
-                return desc->col_name();
+    std::string ticket = _scan_range.ticket;
+    if (config::flight_runtime_in_pushdown) {
+        auto in_filters = collect_flight_in_filters(_conjunct_ctxs, [this](SlotId slot) -> std::string {
+            for (const SlotDescriptor* desc : _tuple_desc->slots()) {
+                if (desc->id() == slot) {
+                    return desc->col_name();
+                }
             }
+            return {};
+        });
+        for (const FlightInFilter& filter : in_filters) {
+            LOG(INFO) << "Flight scan at " << node.flight_uri << ": sending runtime IN-filter on " << filter.column
+                      << " with " << filter.values.size() << " values";
         }
-        return {};
-    });
-    for (const FlightInFilter& filter : in_filters) {
-        LOG(INFO) << "Flight scan at " << node.flight_uri << ": runtime IN-filter on " << filter.column << " with "
-                  << filter.values.size() << " values";
+        ticket = attach_flight_filter_block(ticket, encode_flight_filter_block(in_filters));
     }
 
     // An endpoint without a location, or one that asks to reuse the connection, is served by the
@@ -90,7 +95,7 @@ Status FlightDataSource::open(RuntimeState* state) {
         return Status::InternalError(fmt::format("Cannot connect to Flight endpoint {}: {}", uri, reader.status().message()));
     }
     _reader = std::move(*reader);
-    auto stream = _reader->OpenTicket(arrow::flight::Ticket{_scan_range.ticket});
+    auto stream = _reader->OpenTicket(arrow::flight::Ticket{ticket});
     if (!stream.ok()) {
         return Status::InternalError(fmt::format("Cannot open Flight stream at {}: {}", uri, stream.status().message()));
     }
