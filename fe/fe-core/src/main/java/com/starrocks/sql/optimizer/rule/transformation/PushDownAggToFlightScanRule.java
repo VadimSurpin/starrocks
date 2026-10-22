@@ -131,7 +131,7 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
         if (!(scan.getTable() instanceof FlightTable)
                 || !((FlightTable) scan.getTable()).getConfig().isAggregationPushdown()
                 || scan.getFlightAggregation() != null || scan.getLimit() != -1 || scan.getProjection() != null
-                || agg.getType() != AggType.GLOBAL || agg.isSplit() || agg.getPredicate() != null
+                || agg.getType() != AggType.GLOBAL || agg.isSplit()
                 || agg.getLimit() != -1 || agg.getProjection() != null || agg.getAggregations().isEmpty()) {
             return null;
         }
@@ -169,6 +169,12 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
                 return null;
             }
             specs.add(spec);
+        }
+        // A predicate on the aggregate (HAVING, or a join condition against an aggregate) is evaluated after the
+        // merge, where the aggregate outputs are exactly what it saw. An AVG output only exists above a projection.
+        ScalarOperator having = agg.getPredicate();
+        if (having != null && specs.stream().anyMatch(spec -> spec.avg)) {
+            return null;
         }
         if (factory == null) {
             return new Plan();
@@ -235,6 +241,9 @@ public class PushDownAggToFlightScanRule extends TransformationRule {
                 .setColRefToColumnMetaMap(newColumns).setColumnMetaToColRefMap(newRefs)
                 .setPredicate(null).setFlightAggregation(aggregate).setFlightPredicate(where).build();
         LogicalAggregationOperator mergeAgg = new LogicalAggregationOperator(AggType.GLOBAL, keys, merged);
+        if (having != null) {
+            mergeAgg = new LogicalAggregationOperator.Builder().withOperator(mergeAgg).setPredicate(having).build();
+        }
         OptExpression mergeExpr = OptExpression.create(mergeAgg, OptExpression.create(pushed));
         Plan plan = new Plan();
         plan.result = needsProject ? OptExpression.create(new LogicalProjectOperator(above), mergeExpr) : mergeExpr;

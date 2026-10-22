@@ -32,6 +32,7 @@ import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
+import com.starrocks.sql.optimizer.operator.scalar.IsNullPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.transformation.PushDownAggToFlightScanRule;
 import org.junit.jupiter.api.Assertions;
@@ -139,6 +140,42 @@ public class PushDownAggToFlightScanRuleTest {
         Assertions.assertFalse(pushed.getColRefToColumnMetaMap().containsKey(s));
         Assertions.assertEquals(Type.DOUBLE, pushed.getColRefToColumnMetaMap().values().stream()
                 .filter(c -> c.getName().equals("__agg1")).findFirst().orElseThrow().getType());
+    }
+
+    @Test
+    public void havingPredicateMovesToTheMergeAggregate() {
+        // A join condition such as total_revenue = (select max(...)) arrives as a predicate on the aggregate; the
+        // partials do not change what the merged aggregate outputs, so the predicate is evaluated there.
+        ColumnRefOperator sum = factory.create("sm", Type.DOUBLE, true);
+        Map<ColumnRefOperator, CallOperator> aggs = new LinkedHashMap<>();
+        aggs.put(sum, call(FunctionSet.SUM, Type.DOUBLE, false, d));
+        ScalarOperator having = new IsNullPredicateOperator(true, sum);
+        LogicalAggregationOperator original = new LogicalAggregationOperator.Builder()
+                .withOperator(new LogicalAggregationOperator(AggType.GLOBAL, List.of(k), aggs))
+                .setPredicate(having).build();
+
+        List<OptExpression> result = run(OptExpression.create(original,
+                OptExpression.create(scan(Map.of(), null, -1))));
+
+        Assertions.assertEquals(1, result.size());
+        LogicalAggregationOperator merge = (LogicalAggregationOperator) result.get(0).getOp();
+        Assertions.assertEquals(having, merge.getPredicate());
+        Assertions.assertEquals(FunctionSet.SUM, merge.getAggregations().get(sum).getFnName());
+        Assertions.assertNotNull(((LogicalJDBCScanOperator) result.get(0).inputAt(0).getOp()).getFlightAggregation());
+    }
+
+    @Test
+    public void havingPredicateOnAnAverageStaysInStarRocks() {
+        // AVG is rebuilt from sum and count by a projection above the merge, so a predicate on it cannot move down.
+        ColumnRefOperator avg = factory.create("av", Type.DOUBLE, true);
+        Map<ColumnRefOperator, CallOperator> aggs = new LinkedHashMap<>();
+        aggs.put(avg, call(FunctionSet.AVG, Type.DOUBLE, false, d));
+        LogicalAggregationOperator original = new LogicalAggregationOperator.Builder()
+                .withOperator(new LogicalAggregationOperator(AggType.GLOBAL, List.of(k), aggs))
+                .setPredicate(new IsNullPredicateOperator(true, avg)).build();
+
+        Assertions.assertTrue(run(OptExpression.create(original,
+                OptExpression.create(scan(Map.of(), null, -1)))).isEmpty());
     }
 
     @Test
