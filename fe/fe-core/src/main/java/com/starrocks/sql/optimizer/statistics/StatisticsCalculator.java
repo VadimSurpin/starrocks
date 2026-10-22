@@ -42,6 +42,7 @@ import com.starrocks.common.Config;
 import com.starrocks.common.Pair;
 import com.starrocks.connector.PartitionUtil;
 import com.starrocks.connector.TableVersionRange;
+import com.starrocks.connector.flight.FlightTable;
 import com.starrocks.connector.iceberg.IcebergMORParams;
 import com.starrocks.connector.statistics.ConnectorTableColumnStats;
 import com.starrocks.connector.statistics.StatisticsUtils;
@@ -880,14 +881,40 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
 
     @Override
     public Void visitLogicalJDBCScan(LogicalJDBCScanOperator node, ExpressionContext context) {
+        if (node.getTable() instanceof FlightTable && node.getFlightAggregation() == null
+                && computeFlightScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap())) {
+            return null;
+        }
         return computeNormalExternalTableScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap(),
                 Config.default_statistics_output_row_count);
     }
 
     @Override
     public Void visitPhysicalJDBCScan(PhysicalJDBCScanOperator node, ExpressionContext context) {
+        if (node.getTable() instanceof FlightTable && node.getFlightAggregation() == null
+                && computeFlightScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap())) {
+            return null;
+        }
         return computeNormalExternalTableScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap(),
                 Config.default_statistics_output_row_count);
+    }
+
+    /**
+     * A Flight table reports its row count and column statistics through its connector. Without them the scan
+     * falls back to the one-row default, which leaves join order and broadcast-or-shuffle to chance.
+     *
+     * @return true when the statistics were set
+     */
+    private boolean computeFlightScanNode(Operator node, ExpressionContext context, Table table,
+                                          Map<ColumnRefOperator, Column> colRefToColumnMetaMap) {
+        Statistics statistics = GlobalStateMgr.getCurrentState().getMetadataMgr().getTableStatistics(
+                optimizerContext, table.getCatalogName(), table, colRefToColumnMetaMap, Lists.newArrayList(), null);
+        if (statistics == null || statistics.getOutputRowCount() <= 1) {
+            return false;
+        }
+        context.setStatistics(statistics);
+        visitOperator(node, context);
+        return true;
     }
 
     /**

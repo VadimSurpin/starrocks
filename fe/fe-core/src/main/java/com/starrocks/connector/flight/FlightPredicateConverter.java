@@ -18,12 +18,15 @@ import com.starrocks.analysis.BinaryType;
 import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.sql.optimizer.operator.scalar.BetweenPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
+import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CompoundPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.InPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.IsNullPredicateOperator;
+import com.starrocks.sql.optimizer.operator.scalar.LikePredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
+import pro.surpin.data.arrowflight.starrocks.ScanExpr;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.util.ArrayList;
@@ -55,6 +58,9 @@ public final class FlightPredicateConverter {
             IsNullPredicateOperator isNull = (IsNullPredicateOperator) op;
             return column(isNull.getChild(0)).map(c -> new ScanPredicate.IsNull(c, isNull.isNotNull()));
         }
+        if (op instanceof LikePredicateOperator) {
+            return like((LikePredicateOperator) op);
+        }
         if (op instanceof BetweenPredicateOperator) {
             return between((BetweenPredicateOperator) op);
         }
@@ -68,6 +74,10 @@ public final class FlightPredicateConverter {
         ScalarOperator left = op.getChild(0);
         ScalarOperator right = op.getChild(1);
         boolean flipped = !(left instanceof ColumnRefOperator);
+        if (!(left instanceof ColumnRefOperator && right instanceof ConstantOperator)
+                && !(right instanceof ColumnRefOperator && left instanceof ConstantOperator)) {
+            return expressionComparison(op);
+        }
         if (!sameFamily(flipped ? right : left, flipped ? left : right)) {
             return Optional.empty();
         }
@@ -78,6 +88,116 @@ public final class FlightPredicateConverter {
             return Optional.empty();
         }
         return Optional.of(new ScanPredicate.Compare(column.get(), comparison.get(), literal.get()));
+    }
+
+    /** Column against column, or a whitelisted function of a column against a constant or another column. */
+    private Optional<ScanPredicate> expressionComparison(BinaryPredicateOperator op) {
+        ScalarOperator left = op.getChild(0);
+        ScalarOperator right = op.getChild(1);
+        Optional<ScanExpr> l = value(left);
+        Optional<ScanExpr> r = value(right);
+        Optional<ScanPredicate.Op> comparison = comparison(op.getBinaryType(), false);
+        if (l.isEmpty() || r.isEmpty() || comparison.isEmpty() || !sameFamily(left, right)
+                || (left instanceof ConstantOperator && right instanceof ConstantOperator)) {
+            return Optional.empty();
+        }
+        return Optional.of(new ScanPredicate.ExprCompare(l.get(), comparison.get(), r.get()));
+    }
+
+    /** A column, a whitelisted function of a column, or a constant. */
+    private Optional<ScanExpr> value(ScalarOperator op) {
+        if (op instanceof ConstantOperator) {
+            return literal(op).map(ScanExpr.Constant::new);
+        }
+        return operand(op);
+    }
+
+    /** A column or a whitelisted function of a column. */
+    private Optional<ScanExpr> operand(ScalarOperator op) {
+        try {
+            if (op instanceof ColumnRefOperator) {
+                return column(op).map(ScanExpr.Column::new);
+            }
+            if (op instanceof CallOperator) {
+                return call((CallOperator) op);
+            }
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
+        return Optional.empty();
+    }
+
+    private Optional<ScanExpr> call(CallOperator call) {
+        List<ScalarOperator> args = call.getChildren();
+        switch (call.getFnName().toLowerCase()) {
+            case "substring":
+            case "substr": {
+                if (args.size() != 3 || !(args.get(0) instanceof ColumnRefOperator)
+                        || family(args.get(0)) != Family.STRING) {
+                    return Optional.empty();
+                }
+                Optional<Long> from = integerConstant(args.get(1));
+                Optional<Long> length = integerConstant(args.get(2));
+                Optional<ScanExpr> text = operand(args.get(0));
+                if (from.isEmpty() || length.isEmpty() || text.isEmpty() || from.get() < 1 || length.get() < 0) {
+                    return Optional.empty();
+                }
+                return Optional.of(ScanExpr.Call.substring(text.get(), from.get(), length.get()));
+            }
+            case "year":
+            case "month":
+            case "day":
+            case "dayofmonth": {
+                if (args.size() != 1 || !(args.get(0) instanceof ColumnRefOperator)) {
+                    return Optional.empty();
+                }
+                Family argument = family(args.get(0));
+                Optional<ScanExpr> date = operand(args.get(0));
+                if ((argument != Family.DATE && argument != Family.DATETIME) || date.isEmpty()) {
+                    return Optional.empty();
+                }
+                String name = call.getFnName().toLowerCase();
+                return Optional.of(name.equals("year") ? ScanExpr.Call.year(date.get())
+                        : name.equals("month") ? ScanExpr.Call.month(date.get()) : ScanExpr.Call.day(date.get()));
+            }
+            default:
+                return Optional.empty();
+        }
+    }
+
+    private static Optional<Long> integerConstant(ScalarOperator op) {
+        if (!(op instanceof ConstantOperator) || ((ConstantOperator) op).isNull()) {
+            return Optional.empty();
+        }
+        ConstantOperator constant = (ConstantOperator) op;
+        switch (constant.getType().getPrimitiveType()) {
+            case TINYINT:
+                return Optional.of((long) constant.getTinyInt());
+            case SMALLINT:
+                return Optional.of((long) constant.getSmallint());
+            case INT:
+                return Optional.of((long) constant.getInt());
+            case BIGINT:
+                return Optional.of(constant.getBigint());
+            default:
+                return Optional.empty();
+        }
+    }
+
+    private Optional<ScanPredicate> like(LikePredicateOperator op) {
+        if (op.isRegexp() || family(op.getChild(0)) != Family.STRING || !(op.getChild(1) instanceof ConstantOperator)
+                || ((ConstantOperator) op.getChild(1)).isNull() || family(op.getChild(1)) != Family.STRING) {
+            return Optional.empty();
+        }
+        Optional<ScanExpr> subject = operand(op.getChild(0));
+        if (subject.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(new ScanPredicate.Like(subject.get(), ((ConstantOperator) op.getChild(1)).getVarchar()));
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
     }
 
     private static Optional<ScanPredicate.Op> comparison(BinaryType type, boolean flipped) {
@@ -104,7 +224,8 @@ public final class FlightPredicateConverter {
             return Optional.empty();
         }
         Optional<String> column = column(op.getChild(0));
-        if (column.isEmpty()) {
+        Optional<ScanExpr> subject = column.isPresent() ? Optional.empty() : operand(op.getChild(0));
+        if (column.isEmpty() && subject.isEmpty()) {
             return Optional.empty();
         }
         List<ScanPredicate.Literal> values = new ArrayList<>();
@@ -115,7 +236,8 @@ public final class FlightPredicateConverter {
             }
             values.add(value.get());
         }
-        ScanPredicate in = new ScanPredicate.In(column.get(), values);
+        ScanPredicate in = column.isPresent() ? new ScanPredicate.In(column.get(), values)
+                : new ScanPredicate.ExprIn(subject.get(), values);
         return Optional.of(op.isNotIn() ? new ScanPredicate.Not(in) : in);
     }
 

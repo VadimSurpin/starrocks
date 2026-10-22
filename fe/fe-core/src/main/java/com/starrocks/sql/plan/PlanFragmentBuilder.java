@@ -2128,6 +2128,7 @@ public class PlanFragmentBuilder {
             ScalarOperatorToExpr.FormatterContext formatterContext =
                     new ScalarOperatorToExpr.FormatterContext(context.getColRefToExpr());
             List<ScanPredicate> pushed = new ArrayList<>();
+            ColumnRefSet residualColumns = new ColumnRefSet();
             if (node.getFlightAggregation() != null) {
                 // The rewrite already rendered the whole filter (its columns are no longer in the scan's tuple).
                 if (node.getFlightPredicate() != null) {
@@ -2139,10 +2140,12 @@ public class PlanFragmentBuilder {
                     if (converted.isPresent()) {
                         pushed.add(converted.get());
                     } else {
+                        residualColumns.union(predicate.getUsedColumns());
                         scanNode.getConjuncts().add(
                                 ScalarOperatorToExpr.buildExecExpression(predicate, formatterContext));
                     }
                 }
+                skipColumnsOnlyPushedPredicatesRead(node, tupleDescriptor, residualColumns);
             }
             if (!pushed.isEmpty()) {
                 scanNode.setPushedPredicate(pushed.size() == 1 ? pushed.get(0) : new ScanPredicate.And(pushed));
@@ -2164,6 +2167,37 @@ public class PlanFragmentBuilder {
                     new PlanFragment(context.getNextFragmentId(), scanNode, DataPartition.RANDOM);
             context.getFragments().add(fragment);
             return fragment;
+        }
+
+        /**
+         * A column that only a pushed predicate reads is filtered at the Flight server and never has to be
+         * fetched. Needs the scan's projection to know what the parent reads; one column always stays so the
+         * server query still has a select list.
+         */
+        private void skipColumnsOnlyPushedPredicatesRead(PhysicalJDBCScanOperator node,
+                                                         TupleDescriptor tupleDescriptor,
+                                                         ColumnRefSet residualColumns) {
+            Projection projection = node.getProjection();
+            if (projection == null) {
+                return;
+            }
+            ColumnRefSet needed = projection.getUsedColumns();
+            needed.union(residualColumns);
+            List<ColumnRefOperator> unused = new ArrayList<>();
+            for (ColumnRefOperator ref : node.getColRefToColumnMetaMap().keySet()) {
+                if (!needed.contains(ref)) {
+                    unused.add(ref);
+                }
+            }
+            if (unused.size() == node.getColRefToColumnMetaMap().size()) {
+                unused.remove(0);
+            }
+            for (ColumnRefOperator ref : unused) {
+                tupleDescriptor.getSlot(ref.getId()).setIsMaterialized(false);
+            }
+            if (!unused.isEmpty()) {
+                tupleDescriptor.computeMemLayout();
+            }
         }
 
         @Override

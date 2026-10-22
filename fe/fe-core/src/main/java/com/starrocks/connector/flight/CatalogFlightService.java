@@ -26,6 +26,7 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import pro.surpin.data.arrowflight.starrocks.FlightCatalog;
 import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
+import pro.surpin.data.arrowflight.starrocks.TableStats;
 
 import java.net.URI;
 import java.util.List;
@@ -109,6 +110,11 @@ public class CatalogFlightService implements FlightService {
     public Optional<List<Long>> distinctLongKeys(String schema, String table, String column, ScanPredicate where,
                                                  int maxKeys) {
         return call(() -> catalog.distinctLongKeys(schema, table, column, where, maxKeys));
+    }
+
+    @Override
+    public Optional<TableStats> tableStatistics(String schema, String table, List<String> columns) {
+        return call(() -> catalog.tableStatistics(schema, table, columns));
     }
 
     @Override

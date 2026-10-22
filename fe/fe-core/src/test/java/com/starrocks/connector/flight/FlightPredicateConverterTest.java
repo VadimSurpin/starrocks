@@ -26,6 +26,7 @@ import com.starrocks.sql.optimizer.operator.scalar.CompoundPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.InPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.IsNullPredicateOperator;
+import com.starrocks.sql.optimizer.operator.scalar.LikePredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rewrite.ExternalTablePredicateExtractor;
 import org.junit.jupiter.api.Assertions;
@@ -95,10 +96,9 @@ public class FlightPredicateConverterTest {
 
     @Test
     public void refusesWhatItCannotRenderExactly() {
-        // NULL constants, null-safe equality, column-to-column, explicit casts and functions stay in StarRocks.
+        // NULL constants, null-safe equality, explicit casts and unsupported functions stay in StarRocks.
         assertNotPushable(BinaryPredicateOperator.eq(a, ConstantOperator.createNull(Type.BIGINT)));
         assertNotPushable(new BinaryPredicateOperator(BinaryType.EQ_FOR_NULL, a, ConstantOperator.createBigint(1)));
-        assertNotPushable(BinaryPredicateOperator.eq(a, new ColumnRefOperator(9, Type.BIGINT, "other", true)));
         assertNotPushable(BinaryPredicateOperator.eq(new CastOperator(Type.VARCHAR, a, false),
                 ConstantOperator.createVarchar("1")));
         assertNotPushable(BinaryPredicateOperator.eq(
@@ -175,5 +175,92 @@ public class FlightPredicateConverterTest {
                 sql(BinaryPredicateOperator.gt(a, ConstantOperator.createDouble(1.5))));
         Assertions.assertEquals("(col_x = 7)",
                 sql(BinaryPredicateOperator.eq(x, ConstantOperator.createBigint(7))));
+    }
+
+    private final ColumnRefOperator other = new ColumnRefOperator(9, Type.BIGINT, "other", true);
+    private final ColumnRefOperator s = new ColumnRefOperator(10, Type.VARCHAR, "s", true);
+
+    private CallOperator substring(ScalarOperator text, int from, int length) {
+        return new CallOperator("substring", Type.VARCHAR,
+                List.of(text, ConstantOperator.createInt(from), ConstantOperator.createInt(length)));
+    }
+
+    @Test
+    public void convertsColumnToColumnComparisonsOfOneFamily() {
+        Assertions.assertEquals("(col_a < col_other)", sql(BinaryPredicateOperator.lt(a, other)));
+        Assertions.assertEquals("(col_a <> col_other)", sql(BinaryPredicateOperator.ne(a, other)));
+        Assertions.assertEquals("(col_b >= col_s)", sql(BinaryPredicateOperator.ge(b, s)));
+        ColumnRefOperator d2 = new ColumnRefOperator(11, Type.DATE, "d2", true);
+        Assertions.assertEquals("(col_d < col_d2)", sql(BinaryPredicateOperator.lt(d, d2)));
+    }
+
+    @Test
+    public void refusesColumnComparisonsAcrossFamiliesAndUnmappedColumns() {
+        assertNotPushable(BinaryPredicateOperator.lt(a, b));
+        assertNotPushable(BinaryPredicateOperator.lt(d, t));
+        assertNotPushable(new BinaryPredicateOperator(BinaryType.EQ_FOR_NULL, a, other));
+        FlightPredicateConverter onlyA = new FlightPredicateConverter(ref -> ref == a ? "col_a" : null);
+        Assertions.assertTrue(onlyA.convert(BinaryPredicateOperator.lt(a, other)).isEmpty());
+    }
+
+    @Test
+    public void convertsLikeAndNotLikeOnStringColumns() {
+        Assertions.assertEquals("(col_b LIKE '%BRASS')",
+                sql(new LikePredicateOperator(b, ConstantOperator.createVarchar("%BRASS"))));
+        Assertions.assertEquals("(NOT (col_b LIKE '%special%requests%'))", sql(CompoundPredicateOperator.not(
+                new LikePredicateOperator(b, ConstantOperator.createVarchar("%special%requests%")))));
+        Assertions.assertEquals("(substring(col_b, 1, 2) LIKE '1_')",
+                sql(new LikePredicateOperator(substring(b, 1, 2), ConstantOperator.createVarchar("1_"))));
+    }
+
+    @Test
+    public void refusesLikeThatServerCouldEvaluateDifferently() {
+        assertNotPushable(new LikePredicateOperator(LikePredicateOperator.LikeType.REGEXP, b,
+                ConstantOperator.createVarchar("a.*")));
+        assertNotPushable(new LikePredicateOperator(b, ConstantOperator.createVarchar("a\\%b")));
+        assertNotPushable(new LikePredicateOperator(a, ConstantOperator.createVarchar("1%")));
+        assertNotPushable(new LikePredicateOperator(b, s));
+        assertNotPushable(new LikePredicateOperator(b, ConstantOperator.createNull(Type.VARCHAR)));
+    }
+
+    @Test
+    public void convertsSubstringAndDatePartPredicates() {
+        Assertions.assertEquals("(substring(col_b, 1, 2) IN ('13', '31'))", sql(new InPredicateOperator(false,
+                substring(b, 1, 2), ConstantOperator.createVarchar("13"), ConstantOperator.createVarchar("31"))));
+        Assertions.assertEquals("(NOT (substring(col_b, 1, 2) IN ('13')))", sql(new InPredicateOperator(true,
+                substring(b, 1, 2), ConstantOperator.createVarchar("13"))));
+        Assertions.assertEquals("(substring(col_b, 2, 3) = 'abc')", sql(BinaryPredicateOperator.eq(
+                substring(b, 2, 3), ConstantOperator.createVarchar("abc"))));
+        CallOperator year = new CallOperator("year", Type.SMALLINT, List.of(d));
+        Assertions.assertEquals("(year(col_d) = 1995)", sql(BinaryPredicateOperator.eq(year,
+                ConstantOperator.createInt(1995))));
+        Assertions.assertEquals("(year(col_t) >= 1995)", sql(BinaryPredicateOperator.ge(
+                new CallOperator("year", Type.SMALLINT, List.of(t)), ConstantOperator.createInt(1995))));
+    }
+
+    @Test
+    public void refusesFunctionsOutsideTheWhitelistAndBadArguments() {
+        assertNotPushable(BinaryPredicateOperator.eq(substring(b, 0, 2), ConstantOperator.createVarchar("13")));
+        assertNotPushable(BinaryPredicateOperator.eq(substring(b, -3, 2), ConstantOperator.createVarchar("13")));
+        assertNotPushable(BinaryPredicateOperator.eq(new CallOperator("substring", Type.VARCHAR,
+                List.of(b, ConstantOperator.createInt(1))), ConstantOperator.createVarchar("13")));
+        assertNotPushable(BinaryPredicateOperator.eq(new CallOperator("substring", Type.VARCHAR,
+                List.of(b, a, ConstantOperator.createInt(2))), ConstantOperator.createVarchar("13")));
+        assertNotPushable(BinaryPredicateOperator.eq(new CallOperator("year", Type.SMALLINT, List.of(a)),
+                ConstantOperator.createInt(1995)));
+        assertNotPushable(BinaryPredicateOperator.eq(new CallOperator("upper", Type.VARCHAR, List.of(b)),
+                ConstantOperator.createVarchar("X")));
+        assertNotPushable(BinaryPredicateOperator.eq(substring(b, 1, 2), ConstantOperator.createBigint(13)));
+    }
+
+    @Test
+    public void extractorPushesExpressionPredicatesAndKeepsOthers() {
+        ScalarOperator colCol = BinaryPredicateOperator.lt(a, other);
+        ScalarOperator keep = BinaryPredicateOperator.eq(
+                new CallOperator("abs", Type.BIGINT, List.of(a)), ConstantOperator.createBigint(2));
+        ExternalTablePredicateExtractor extractor = flightExtractor();
+        extractor.extract(CompoundPredicateOperator.and(colCol, keep));
+        Assertions.assertEquals(colCol, extractor.getPushPredicate());
+        Assertions.assertEquals(keep, extractor.getReservePredicate());
     }
 }

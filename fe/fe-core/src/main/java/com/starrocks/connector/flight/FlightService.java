@@ -18,6 +18,7 @@ import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.vector.types.pojo.Schema;
 import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
+import pro.surpin.data.arrowflight.starrocks.TableStats;
 
 import java.util.List;
 import java.util.Optional;
@@ -43,6 +44,14 @@ public interface FlightService extends AutoCloseable {
      */
     default Optional<List<Long>> distinctLongKeys(String schema, String table, String column, ScanPredicate where,
                                                   int maxKeys) {
+        return Optional.empty();
+    }
+
+    /**
+     * Asks the server for the statistics of a table, or returns empty when it does not offer them. The distinct
+     * count of a column may still be pending ({@code ndv == null}) and arrive in a later answer.
+     */
+    default Optional<TableStats> tableStatistics(String schema, String table, List<String> columns) {
         return Optional.empty();
     }
 
