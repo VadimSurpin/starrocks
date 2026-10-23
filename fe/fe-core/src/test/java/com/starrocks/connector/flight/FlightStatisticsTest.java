@@ -186,6 +186,19 @@ public class FlightStatisticsTest {
     }
 
     @Test
+    public void statisticsSwitchedOffAreNeitherAskedForNorUsed() {
+        service.answer = Optional.of(stats(2990L));
+        FlightMetadata off = new FlightMetadata("flight", service,
+                FlightConfig.from(Map.of("flight.uri", "grpc://localhost:8815", "flight.statistics", "false")));
+        Table offTable = off.getTable(null, "sales", "orders");
+        Column id = offTable.getColumn("id");
+        Map<ColumnRefOperator, Column> columns = Map.of(new ColumnRefOperator(1, id.getType(), "id", true), id);
+        Assertions.assertNull(off.getTableStatistics(null, offTable, columns, List.of(), null, -1,
+                TableVersionRange.empty()));
+        Assertions.assertEquals(0, service.statisticCalls.get());
+    }
+
+    @Test
     public void aFailingServerNeverFailsPlanning() {
         service.failure = new IllegalStateException("boom");
         Assertions.assertNull(ask(refs("id")));

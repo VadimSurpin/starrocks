@@ -34,6 +34,7 @@ import com.starrocks.sql.optimizer.rule.transformation.FlightJoinKeyReductionRul
 import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import pro.surpin.data.arrowflight.starrocks.ScanAggregate;
 import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
@@ -101,6 +102,11 @@ public class FlightJoinKeyReductionRuleTest {
 
     private final ColumnRefFactory factory = new ColumnRefFactory();
     private final FakeService service = new FakeService();
+
+    @BeforeEach
+    public void forgetEarlierGiveUps() {
+        FlightJoinKeyReductionRule.forgetGaveUp();
+    }
     private final Column fkCol = new Column("fk", Type.BIGINT);
     private final Column vCol = new Column("v", Type.BIGINT);
     private final Column dkCol = new Column("dk", Type.BIGINT);
@@ -361,5 +367,19 @@ public class FlightJoinKeyReductionRuleTest {
 
         Assertions.assertTrue(result.isEmpty(), "no reduced plan when the key fetch times out");
         Assertions.assertTrue(elapsedMillis < 5_000, "planning waited " + elapsedMillis + " ms");
+    }
+
+    @Test
+    public void aFetchThatGaveUpIsNotRepeatedForTheSameFilter() {
+        // no canned keys for "dims": the service answers empty, as it does past max_keys
+        for (int i = 0; i < 3; i++) {
+            Assertions.assertTrue(run(join(JoinOperator.INNER_JOIN, onKeys(), facts(null, Map.of()),
+                    dims(flagIs(5), Map.of()))).isEmpty());
+        }
+        Assertions.assertEquals(1, service.requests.size(), String.valueOf(service.requests));
+
+        // another filter is a different question and is asked
+        run(join(JoinOperator.INNER_JOIN, onKeys(), facts(null, Map.of()), dims(flagIs(6), Map.of())));
+        Assertions.assertEquals(2, service.requests.size(), String.valueOf(service.requests));
     }
 }

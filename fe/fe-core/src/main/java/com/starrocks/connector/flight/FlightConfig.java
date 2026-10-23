@@ -27,6 +27,7 @@ public final class FlightConfig {
     public static final String AUTH_TOKEN_KEY = "flight.auth.token";
     public static final String CACHE_TTL_KEY = "flight.cache.ttl.seconds";
     public static final String AGGREGATION_PUSHDOWN_KEY = "flight.aggregation_pushdown";
+    public static final String STATISTICS_KEY = "flight.statistics";
     public static final String JOIN_KEY_REDUCTION_KEY = "flight.join_key_reduction";
     public static final String JOIN_KEY_REDUCTION_MAX_KEYS_KEY = "flight.join_key_reduction.max_keys";
     public static final int DEFAULT_JOIN_KEY_REDUCTION_MAX_KEYS = 100_000;
@@ -41,13 +42,15 @@ public final class FlightConfig {
     private final String token;
     private final int cacheTtlSeconds;
     private final boolean aggregationPushdown;
+    private final boolean statistics;
     private final boolean joinKeyReduction;
     private final int joinKeyReductionMaxKeys;
     private final int joinKeyReductionTimeoutMs;
 
     private FlightConfig(String uri, AuthType authType, String token, int cacheTtlSeconds,
-                         boolean aggregationPushdown, boolean joinKeyReduction, int joinKeyReductionMaxKeys,
-                         int joinKeyReductionTimeoutMs) {
+                         boolean aggregationPushdown, boolean statistics, boolean joinKeyReduction,
+                         int joinKeyReductionMaxKeys, int joinKeyReductionTimeoutMs) {
+        this.statistics = statistics;
         this.aggregationPushdown = aggregationPushdown;
         this.joinKeyReduction = joinKeyReduction;
         this.joinKeyReductionMaxKeys = joinKeyReductionMaxKeys;
@@ -112,6 +115,15 @@ public final class FlightConfig {
             }
             aggregationPushdown = Boolean.parseBoolean(pushdownValue);
         }
+        boolean statistics = true;
+        String statisticsValue = properties.get(STATISTICS_KEY);
+        if (statisticsValue != null) {
+            if (!"true".equalsIgnoreCase(statisticsValue) && !"false".equalsIgnoreCase(statisticsValue)) {
+                throw new StarRocksConnectorException(
+                        STATISTICS_KEY + " must be 'true' or 'false', got: " + statisticsValue);
+            }
+            statistics = Boolean.parseBoolean(statisticsValue);
+        }
         boolean joinKeyReduction = true;
         String reductionValue = properties.get(JOIN_KEY_REDUCTION_KEY);
         if (reductionValue != null) {
@@ -147,11 +159,17 @@ public final class FlightConfig {
                         + " must be a positive integer, got: " + timeoutValue);
             }
         }
-        return new FlightConfig(uri, authType, token, ttl, aggregationPushdown, joinKeyReduction, maxKeys, timeoutMs);
+        return new FlightConfig(uri, authType, token, ttl, aggregationPushdown, statistics, joinKeyReduction, maxKeys,
+                timeoutMs);
     }
 
     public boolean isAggregationPushdown() {
         return aggregationPushdown;
+    }
+
+    /** Whether row counts and column statistics are requested from the Flight server for planning. */
+    public boolean isStatistics() {
+        return statistics;
     }
 
     /** Whether a selective filter on one side of a join may be turned into an IN list on the other side. */

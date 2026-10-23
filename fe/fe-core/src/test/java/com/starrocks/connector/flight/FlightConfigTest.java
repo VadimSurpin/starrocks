@@ -39,6 +39,15 @@ public class FlightConfigTest {
     }
 
     @Test
+    public void statisticsAreOnByDefaultAndCanBeSwitchedOff() {
+        Assertions.assertTrue(FlightConfig.from(props("flight.uri", "grpc://h:1")).isStatistics());
+        Assertions.assertFalse(FlightConfig.from(props("flight.uri", "grpc://h:1", "flight.statistics", "false"))
+                .isStatistics());
+        Assertions.assertThrows(StarRocksConnectorException.class,
+                () -> FlightConfig.from(props("flight.uri", "grpc://h:1", "flight.statistics", "maybe")));
+    }
+
+    @Test
     public void requiresUriAndTokenForTokenAuth() {
         Assertions.assertThrows(StarRocksConnectorException.class, () -> FlightConfig.from(props()));
         Assertions.assertThrows(StarRocksConnectorException.class, () -> FlightConfig.from(

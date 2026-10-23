@@ -41,7 +41,9 @@ import pro.surpin.data.arrowflight.starrocks.ScanPredicate;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -70,7 +72,18 @@ public class FlightJoinKeyReductionRule extends TransformationRule {
         return thread;
     });
 
+    // Fetches that gave up (too many keys, too slow, failed) by table, column and filter, so the same hopeless query
+    // does not cost planning another round trip every time; entries expire so a changed table is tried again.
+    private static final long GIVE_UP_TTL_NANOS = TimeUnit.MINUTES.toNanos(10);
+    private static final int GIVE_UP_MAX_ENTRIES = 1024;
+    private static final Map<String, Long> GAVE_UP = new ConcurrentHashMap<>();
+
     public static final FlightJoinKeyReductionRule INSTANCE = new FlightJoinKeyReductionRule();
+
+    /** Forgets which key fetches gave up; for tests, which share one JVM and must not see each other's memo. */
+    public static void forgetGaveUp() {
+        GAVE_UP.clear();
+    }
 
     private FlightJoinKeyReductionRule() {
         super(RuleType.TF_FLIGHT_JOIN_KEY_REDUCTION, Pattern.create(OperatorType.LOGICAL_JOIN)
@@ -279,6 +292,25 @@ public class FlightJoinKeyReductionRule extends TransformationRule {
     private static Optional<List<Long>> fetchKeys(FlightTable table, LogicalJDBCScanOperator scan,
                                                   ColumnRefOperator keyRef, ScanPredicate filter) {
         String column = scan.getColRefToColumnMetaMap().get(keyRef).getName();
+        String memo = table.getCatalogDBName() + "." + table.getName() + "." + column + " " + filter;
+        Long gaveUpAt = GAVE_UP.get(memo);
+        if (gaveUpAt != null) {
+            if (System.nanoTime() - gaveUpAt < GIVE_UP_TTL_NANOS) {
+                return Optional.empty();
+            }
+            GAVE_UP.remove(memo);
+        }
+        Optional<List<Long>> keys = requestKeys(table, column, filter);
+        if (keys.isEmpty()) {
+            if (GAVE_UP.size() >= GIVE_UP_MAX_ENTRIES) {
+                GAVE_UP.clear();
+            }
+            GAVE_UP.put(memo, System.nanoTime());
+        }
+        return keys;
+    }
+
+    private static Optional<List<Long>> requestKeys(FlightTable table, String column, ScanPredicate filter) {
         int timeoutMs = table.getConfig().getJoinKeyReductionTimeoutMs();
         Future<Optional<List<Long>>> fetch = FETCHER.submit(() -> table.getService().distinctLongKeys(
                 table.getCatalogDBName(), table.getName(), column, filter,

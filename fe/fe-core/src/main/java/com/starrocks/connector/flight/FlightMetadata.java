@@ -153,7 +153,7 @@ public class FlightMetadata implements ConnectorMetadata {
     public Statistics getTableStatistics(OptimizerContext session, Table table,
                                          Map<ColumnRefOperator, Column> columns, List<PartitionKey> partitionKeys,
                                          ScalarOperator predicate, long limit, TableVersionRange versionRange) {
-        if (!(table instanceof FlightTable)) {
+        if (!(table instanceof FlightTable) || !config.isStatistics()) {
             return null;
         }
         Optional<TableStats> stats = tableStats((FlightTable) table, columns.values());
